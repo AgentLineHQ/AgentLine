@@ -1,6 +1,6 @@
 ---
 name: agentline
-description: Make phone calls, view received SMS, provision numbers, manage agents, and track billing through the AgentLine telephony API. Use when the user asks to call someone, check transcripts, view text messages, manage phone agents, buy numbers, or check account balance.
+description: Make phone calls, view received SMS, provision numbers, manage agents, and track billing through the AgentLine telephony API (REST or MCP). Use when the user asks to call someone, check transcripts, view text messages, manage phone agents, buy numbers, or check account balance. For MCP-native workflows, the server at api.agentline.cloud/mcp exposes 21+ tools as first-class agent tools.
 metadata:
   openclaw:
     emoji: "📞"
@@ -41,6 +41,11 @@ Give your AI agent a real phone number and voice calls — no servers, no webhoo
 5. **Start the background event poller** — This is **MANDATORY**. Write the polling script (see Events Mailbox section below) to a scratch file and launch it as a background command. Without this, you will miss all inbound calls and SMS messages.
 
 > ⚠️ **Do NOT skip ANY steps.** Steps 1-4 set up the agent. Step 5 keeps it alive and aware of incoming calls/texts.
+   - Write the polling script (Bash for Linux/macOS, PowerShell for Windows) from the Events Mailbox section below
+   - Launch it as a background process with `terminal(background=true)`
+   - Verify it's running
+
+> ⚠️ **Do NOT skip steps or change the order.** The human should have a working agent with their chosen area code number, voice, and running event poller by the end.
 
 ---
 
@@ -65,8 +70,27 @@ AgentLine runs in **Hosted Mode** — the server runs the AI voice conversation 
 
 ---
 
+## Before Calling — Balance Check
+
+Always check balance first. Calls require minimum **$0.50**:
+```bash
+curl -s "$AGENTLINE_URL/v1/billing/balance" -H "Authorization: Bearer $AGENTLINE_API_KEY"
+```
+If balance < $0.50, warn the user before attempting the call.
+
 ## Make an Outbound Call
 
+**Pitfall:** JSON payloads with newlines, quotes, or special characters will break in inline curl. Always write the payload to a temp file and use `-d @file`:
+
+```bash
+# Write payload to temp file, then:
+curl -s -X POST $AGENTLINE_URL/v1/calls \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d @/tmp/al_call_payload.json
+```
+
+Inline variant (simple payloads only):
 ```bash
 curl -X POST $AGENTLINE_URL/v1/calls \
   -H "Authorization: Bearer $AGENTLINE_API_KEY" \
@@ -82,9 +106,11 @@ curl -X POST $AGENTLINE_URL/v1/calls \
 | `initial_greeting` | No | What the agent says first when the person picks up |
 | `voice_id` | No | `"female-1"`, `"female-2"`, `"male-1"`, or Cartesia UUID |
 
-**After every outbound call:** Poll `GET /v1/calls/<call_id>` every ~10s until `status=completed`, then `GET /v1/calls/<call_id>/transcript`. Summarize and share with human. Never consider a call "done" without the transcript.
+**After every outbound call:** Poll `GET /v1/calls/<call_id>` every 15-30s until `status=completed`, then `GET /v1/calls/<call_id>/transcript`. Real calls take 45-120s. Use `sleep N && curl ... | python3 -c` to check status + extract transcript in one shot. Summarize and share with human. Never consider a call "done" without the transcript.
 
 **If you get 400 "Agent has no active phone number"**, provision one first.
+
+**Pitfall — agent loops on voicemail/call control:** The voice AI will repeat its greeting 3-4 times into voicemail or call-control prompts ("press 3 to connect", "please leave a message"). This wastes credits and sounds bad. After the first 15-20s poll, check the transcript: if human turns are all automated system messages (not real human replies), hang up immediately. Feedback surveys and check-in calls don't work on voicemail.
 
 ---
 
@@ -137,7 +163,7 @@ while true; do
   CODE=$(echo "$RESP" | tail -1); BODY=$(echo "$RESP" | sed '$d')
   [ "$CODE" = "401" ] && { echo "AGENTLINE_AUTH_ERROR"; exit 1; }
   [[ "$CODE" != 2* ]] && { sleep "$INTERVAL"; continue; }
-  COUNT=$(echo "$BODY" | grep -oP '"pending_count"\s*:\s*\K[0-9]+' 2>/dev/null || echo "0")
+  COUNT=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('pending_count',0))" 2>/dev/null || echo "0")
   [ "$COUNT" -gt 0 ] && echo "AGENTLINE_EVENTS_FOUND: $COUNT pending event(s). Call GET /v1/events to consume."
   sleep "$INTERVAL"
 done
@@ -205,7 +231,7 @@ Priority (highest wins): per-call → per-agent → per-account
 - **List voices:** `GET /v1/voices`
 - **Set account default:** `PATCH /v1/account/voice` with `{"voice_id": "female-1"}`
 - **Check current:** `GET /v1/account/voice`
-- **Reset to default:** `DELETE /v1/account/voice` — resets to system default (`male-1`)
+- **Reset to default:** `DELETE /v1/account/voice`
 
 ---
 
@@ -236,6 +262,9 @@ If no numbers are available for the requested area code, the API returns an erro
 
 - **Check balance:** `GET /v1/billing/balance`
 - **Expenditure:** `GET /v1/billing/expenditure?period=current_month` (also: `last_month`, `all_time`, `YYYY-MM`)
+- **Call charges:** `GET /v1/billing/expenditure/calls?limit=10`
+- **Number charges:** `GET /v1/billing/expenditure/numbers`
+- **Verify charge:** `GET /v1/billing/verify/<call_id>`
 
 ### Rates
 
@@ -246,12 +275,31 @@ If no numbers are available for the requested area code, the API returns an erro
 
 ---
 
+## MCP Server
+
+AgentLine exposes a full MCP (Model Context Protocol) server at `https://api.agentline.cloud/mcp` with 21+ tools. For Claude Desktop, Cursor, or any MCP-compatible client, connect directly via:
+
+```json
+{
+  "mcpServers": {
+    "agentline": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote@latest", "https://api.agentline.cloud/mcp", "--header", "Authorization: Bearer YOUR_API_KEY"]
+    }
+  }
+}
+```
+
+All REST endpoints above are also available as MCP tools (`create_agent`, `make_outbound_call`, `poll_events`, etc.).
+
+---
+
 ## Rules
 
 1. **E.164 format** — always `+1XXXXXXXXXX` for US numbers.
 2. **Confirm before calling** — never auto-dial without explicit consent.
 3. **No outbound SMS** — inform user it's not available if they ask.
-4. **Keep voice responses short** — under 30 words per turn.
+4. **Keep voice responses extremely short** — under 15 words per turn. Max 12 for outbound feedback/support calls. The voice AI rambles without tight constraints.
 5. **US only** — country must be `"US"`.
 6. **Don't release numbers** — numbers are permanent once provisioned.
 7. **Always retrieve transcripts** — poll until `completed`, fetch transcript, summarize for human.
