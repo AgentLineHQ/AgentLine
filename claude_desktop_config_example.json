@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agentline": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote@latest",
+        "http://localhost:8000/mcp",
+        "--header", "Authorization: Bearer ${AGENTLINE_API_KEY}"
+      ]
+    }
+  }
+}
