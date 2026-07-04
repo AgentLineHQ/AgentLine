@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/agentlinehq-agentline-badge.png)](https://mseep.ai/app/agentlinehq-agentline)
+
 <div align="center">
   <img src="agentline-logo-200.png" alt="AgentLine Logo" width="120" />
   <h1>AgentLine</h1>
