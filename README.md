@@ -11,11 +11,11 @@
   [![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
   [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-8B5CF6.svg)](https://modelcontextprotocol.io)
   [![Docker Ready](https://img.shields.io/badge/Docker-Ready-2496ED.svg?logo=docker&logoColor=white)](Dockerfile)
-  [![Discord](https://img.shields.io/badge/Discord-Join-5865F2.svg?logo=discord&logoColor=white)](https://discord.gg/RmaJv8qHX)
+  [![Discord](https://img.shields.io/badge/Discord-Join-5865F2.svg?logo=discord&logoColor=white)](https://discord.gg/69SVE2jWNr)
 
   <br/>
 
-  [Website](https://agentline.cloud) · [Docs](https://agentline.cloud/docs) · [Skill File](https://agentline.cloud/skill.md) · [Discord](https://discord.gg/RmaJv8qHX)
+  [Website](https://agentline.cloud) · [Docs](https://agentline.cloud/docs) · [Skill File](https://agentline.cloud/skill.md) · [Discord](https://discord.gg/69SVE2jWNr)
 
   <br/>
 </div>
@@ -328,7 +328,7 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## Community
 
-- 💬 [Discord](https://discord.gg/RmaJv8qHX) — Chat with the team and other builders
+- 💬 [Discord](https://discord.gg/69SVE2jWNr) — Chat with the team and other builders
 - 🐦 [Twitter](https://twitter.com/ovalpod94416) — Updates and announcements
 - 📖 [Docs](https://agentline.cloud/docs) — Full API documentation
 - 📝 [Blog](https://agentline.cloud/blogs) — Guides and tutorials
