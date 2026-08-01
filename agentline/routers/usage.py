@@ -11,6 +11,7 @@ from agentline.billing import (
     CALL_RATE_PER_MINUTE,
     NUMBER_PROVISION_COST,
     NUMBER_MONTHLY_COST,
+    apply_monthly_number_fees_for_account,
     calculate_call_cost,
     credit_account,
 )
@@ -57,13 +58,14 @@ async def get_usage(
         account["id"],
     )
 
-    # Count active numbers
+    # Lazy monthly number rental, then count numbers + balance
+    await apply_monthly_number_fees_for_account(db, account["id"])
+
     number_count = await db.fetchval(
         "SELECT COUNT(*) FROM phone_numbers WHERE account_id=$1 AND status='active'",
         account["id"],
     )
 
-    # Get current balance
     balance = await db.fetchval(
         "SELECT balance FROM accounts WHERE id = $1", account["id"]
     )
@@ -103,6 +105,8 @@ async def get_balance(
     Returns your available balance in USD. This balance is used to
     pay for AI agent phone calls and phone number provisioning.
     """
+    await apply_monthly_number_fees_for_account(db, account["id"])
+
     balance = await db.fetchval(
         "SELECT balance FROM accounts WHERE id = $1", account["id"]
     )

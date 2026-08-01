@@ -19,6 +19,7 @@ from agentline.signalwire_client import (
 from agentline.billing import (
     NUMBER_PROVISION_COST,
     NUMBER_MONTHLY_COST,
+    apply_monthly_number_fees_for_account,
     check_balance,
     debit_account,
 )
@@ -76,7 +77,8 @@ async def provision(
             "Reassign it first with PATCH /v1/numbers/{number_id}/reassign before provisioning a new one.",
         )
 
-    # Check balance before provisioning ($2.00 per number)
+    # Lazy monthly rental for existing numbers, then check balance for provision
+    await apply_monthly_number_fees_for_account(db, account["id"])
     try:
         await check_balance(db, account["id"], NUMBER_PROVISION_COST)
     except ValueError as e:
@@ -175,6 +177,9 @@ async def list_numbers(
     including which agent each number is assigned to, the number's
     status (active/released), and country.
     """
+    # Lazy monthly number rental ($2 per active number past 1 month)
+    await apply_monthly_number_fees_for_account(db, account["id"])
+
     rows = await db.fetch(
         """SELECT * FROM phone_numbers
            WHERE account_id = $1
@@ -252,7 +257,8 @@ async def attach_existing_number(
     if not phone_number.startswith("+1"):
         raise HTTPException(400, "Only US numbers (+1) via SignalWire are supported.")
 
-    # ── Billing: check balance before attaching ($2.00 per number) ──
+    # Lazy monthly rental, then check balance for attach fee
+    await apply_monthly_number_fees_for_account(db, account["id"])
     try:
         await check_balance(db, account["id"], NUMBER_PROVISION_COST)
     except ValueError as e:

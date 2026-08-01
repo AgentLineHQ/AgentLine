@@ -199,29 +199,49 @@ async def debit_account(
     return new_balance
 
 
-async def charge_due_monthly_number_fees(db) -> dict:
+async def charge_due_monthly_number_fees(
+    db,
+    account_id: str | None = None,
+) -> dict:
     """
     Charge $2.00 monthly rental for each active phone number whose last
     bill date (last_billed_at, else created_at) is at least one month ago.
 
-    Idempotent across restarts and multi-instance deploys:
+    Designed for **lazy / on-request** billing (no cron or background
+    scheduler). Call this for a single account when they hit the API
+    (balance, numbers, calls, etc.). Safe on serverless (Vercel): runs
+    only inside the request, then exits.
+
+    Idempotent:
       - Only rows that claim the update via WHERE last_billed_at condition
         are charged
       - A recent number_monthly ledger entry also skips the charge
 
     Insufficient balance: debit fails, Resend low-balance email is sent
-    (via debit_account), last_billed_at is rolled back for retry next cycle.
+    (via debit_account), last_billed_at is rolled back for the next request.
 
     Returns a summary dict: charged, failed, skipped, total_amount.
     """
-    due = await db.fetch(
-        """SELECT id, account_id, phone_number,
-                  COALESCE(last_billed_at, created_at) AS last_bill
-           FROM phone_numbers
-           WHERE status = 'active'
-             AND COALESCE(last_billed_at, created_at) <= (now() - interval '1 month')
-           ORDER BY COALESCE(last_billed_at, created_at) ASC"""
-    )
+    if account_id:
+        due = await db.fetch(
+            """SELECT id, account_id, phone_number,
+                      COALESCE(last_billed_at, created_at) AS last_bill
+               FROM phone_numbers
+               WHERE status = 'active'
+                 AND account_id = $1
+                 AND COALESCE(last_billed_at, created_at) <= (now() - interval '1 month')
+               ORDER BY COALESCE(last_billed_at, created_at) ASC""",
+            account_id,
+        )
+    else:
+        due = await db.fetch(
+            """SELECT id, account_id, phone_number,
+                      COALESCE(last_billed_at, created_at) AS last_bill
+               FROM phone_numbers
+               WHERE status = 'active'
+                 AND COALESCE(last_billed_at, created_at) <= (now() - interval '1 month')
+               ORDER BY COALESCE(last_billed_at, created_at) ASC"""
+        )
 
     charged = 0
     failed = 0
@@ -230,7 +250,7 @@ async def charge_due_monthly_number_fees(db) -> dict:
 
     for row in due:
         number_id = row["id"]
-        account_id = row["account_id"]
+        acct_id = row["account_id"]
         phone = row["phone_number"]
 
         # Extra idempotency: skip if already charged in the last ~28 days
@@ -270,7 +290,7 @@ async def charge_due_monthly_number_fees(db) -> dict:
         try:
             await debit_account(
                 db,
-                account_id,
+                acct_id,
                 NUMBER_MONTHLY_COST,
                 txn_type="number_monthly",
                 reference_id=number_id,
@@ -281,11 +301,11 @@ async def charge_due_monthly_number_fees(db) -> dict:
             total_amount += NUMBER_MONTHLY_COST
             logger.info(
                 "Monthly number fee: $%.2f for %s (%s) on account %s",
-                NUMBER_MONTHLY_COST, phone, number_id, account_id,
+                NUMBER_MONTHLY_COST, phone, number_id, acct_id,
             )
         except Exception as e:
             failed += 1
-            # Roll back the claim so the number is retried next cycle
+            # Roll back the claim so the next API request can retry
             await db.execute(
                 """UPDATE phone_numbers
                    SET last_billed_at = $1
@@ -300,8 +320,8 @@ async def charge_due_monthly_number_fees(db) -> dict:
 
     if charged or failed:
         logger.info(
-            "Monthly number billing run: charged=%d failed=%d skipped=%d total=$%.2f",
-            charged, failed, skipped, total_amount,
+            "Monthly number billing: charged=%d failed=%d skipped=%d total=$%.2f account=%s",
+            charged, failed, skipped, total_amount, account_id or "*",
         )
 
     return {
@@ -310,6 +330,20 @@ async def charge_due_monthly_number_fees(db) -> dict:
         "skipped": skipped,
         "total_amount": round(total_amount, 4),
     }
+
+
+async def apply_monthly_number_fees_for_account(db, account_id: str) -> dict:
+    """
+    Request-scoped helper: apply any due monthly number fees for one account.
+    Never raises — failures are logged inside charge_due_monthly_number_fees.
+    """
+    try:
+        return await charge_due_monthly_number_fees(db, account_id=account_id)
+    except Exception as e:
+        logger.warning(
+            "apply_monthly_number_fees_for_account(%s) failed: %s", account_id, e
+        )
+        return {"charged": 0, "failed": 0, "skipped": 0, "total_amount": 0.0}
 
 
 async def credit_account(

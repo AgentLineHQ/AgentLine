@@ -21,6 +21,7 @@ from agentline.billing import (
     CALL_RATE_PER_MINUTE,
     NUMBER_PROVISION_COST,
     NUMBER_MONTHLY_COST,
+    apply_monthly_number_fees_for_account,
     calculate_call_cost,
 )
 
@@ -43,7 +44,13 @@ async def get_balance(
     and phone numbers, and how many call minutes or phone numbers
     the balance can cover. Use this to check affordability before
     making calls or buying numbers for your AI agents.
+
+    Also applies any due $2/month number rental fees for this account
+    (lazy billing — no background cron).
     """
+    # Lazy monthly number rental ($2 per active number past 1 month)
+    await apply_monthly_number_fees_for_account(db, account["id"])
+
     row = await db.fetchrow(
         "SELECT balance, created_at FROM accounts WHERE id = $1",
         account["id"],
