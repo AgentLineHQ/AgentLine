@@ -3,13 +3,14 @@ AgentLine — FastAPI Application Entry Point
 Mounts all routers and manages startup/shutdown lifecycle.
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from agentline.database import init_db, close_db
+from agentline.database import init_db, close_db, get_db_conn
 from agentline.redis_client import init_redis, close_redis
 from agentline.routers import agents, numbers, messages, calls, usage, events, signalwire_events, billing_api, voice_settings
 
@@ -20,6 +21,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("agentline")
+
+# How often to scan for numbers due for monthly rental ($2 each)
+_MONTHLY_BILLING_INTERVAL_SECONDS = 3600  # every hour
 
 
 @asynccontextmanager
@@ -35,12 +39,50 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Non-fatal: failed to reconfigure number callbacks on startup: %s", e)
 
+    # Background task: monthly $2 rental for each active phone number
+    monthly_billing_task = asyncio.create_task(_monthly_number_billing_loop())
+
     logger.info("AgentLine ready.")
     yield
     logger.info("Shutting down AgentLine...")
+    monthly_billing_task.cancel()
+    try:
+        await monthly_billing_task
+    except asyncio.CancelledError:
+        pass
     await close_redis()
     await close_db()
     logger.info("AgentLine stopped.")
+
+
+async def _monthly_number_billing_loop():
+    """
+    Periodically charge $2.00 for each active phone number that has been
+    provisioned for at least one full month since its last bill.
+    """
+    # Small delay so startup DB init / migrations settle
+    await asyncio.sleep(15)
+    while True:
+        try:
+            from agentline.billing import charge_due_monthly_number_fees
+
+            async with get_db_conn() as db:
+                summary = await charge_due_monthly_number_fees(db)
+            if summary.get("charged"):
+                logger.info(
+                    "Monthly number billing: charged %d number(s) for $%.2f total",
+                    summary["charged"],
+                    summary["total_amount"],
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Monthly number billing cycle failed (will retry): %s", e)
+
+        try:
+            await asyncio.sleep(_MONTHLY_BILLING_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
 
 
 async def _reconfigure_number_callbacks():

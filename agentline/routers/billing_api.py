@@ -7,7 +7,7 @@ Endpoints:
   GET  /v1/billing/balance              — Current account balance
   GET  /v1/billing/expenditure          — Expenditure breakdown (calls, numbers, SMS)
   GET  /v1/billing/expenditure/calls    — Call-specific charges with per-call detail
-  GET  /v1/billing/expenditure/numbers  — Number provisioning charges
+  GET  /v1/billing/expenditure/numbers  — Number provisioning + monthly rental charges
   GET  /v1/billing/verify/{call_id}     — Verify balance was reduced after a specific call
   GET  /v1/billing/summary              — Month-over-month spending summary
 """
@@ -20,6 +20,7 @@ from agentline.database import get_db
 from agentline.billing import (
     CALL_RATE_PER_MINUTE,
     NUMBER_PROVISION_COST,
+    NUMBER_MONTHLY_COST,
     calculate_call_cost,
 )
 
@@ -68,6 +69,7 @@ async def get_balance(
         "rates": {
             "call_per_minute": CALL_RATE_PER_MINUTE,
             "number_provision": NUMBER_PROVISION_COST,
+            "number_monthly": NUMBER_MONTHLY_COST,
         },
     }
 
@@ -243,20 +245,20 @@ async def get_number_expenditure(
     db=Depends(get_db),
 ):
     """
-    List phone number provisioning charges.
+    List phone number charges (provisioning + monthly rental).
 
-    Shows the cost of each phone number bought for your AI agents,
-    including the number, country, and current status.
+    Shows the cost of each phone number bought for your AI agents
+    and subsequent $2.00/month rental fees while numbers stay active.
     """
     rows = await db.fetch(
         """SELECT
                bl.id, bl.amount, bl.balance_after, bl.reference_id,
-               bl.description, bl.created_at AS charged_at,
+               bl.txn_type, bl.description, bl.created_at AS charged_at,
                pn.phone_number, pn.country, pn.status AS number_status
            FROM billing_ledger bl
            LEFT JOIN phone_numbers pn ON pn.id = bl.reference_id
            WHERE bl.account_id = $1
-             AND bl.txn_type = 'number_provision'
+             AND bl.txn_type IN ('number_provision', 'number_monthly')
            ORDER BY bl.created_at DESC
            LIMIT $2 OFFSET $3""",
         account["id"], limit, offset,
@@ -264,7 +266,8 @@ async def get_number_expenditure(
 
     total = await db.fetchval(
         """SELECT COUNT(*) FROM billing_ledger
-           WHERE account_id = $1 AND txn_type = 'number_provision'""",
+           WHERE account_id = $1
+             AND txn_type IN ('number_provision', 'number_monthly')""",
         account["id"],
     )
 
@@ -276,6 +279,7 @@ async def get_number_expenditure(
                 "phone_number": r["phone_number"],
                 "country": r["country"],
                 "number_status": r["number_status"],
+                "txn_type": r["txn_type"],
                 "amount": abs(float(r["amount"])),
                 "balance_after": float(r["balance_after"]),
                 "description": r["description"],

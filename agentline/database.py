@@ -80,6 +80,27 @@ async def init_db():
                     ADD COLUMN IF NOT EXISTS initial_greeting TEXT
             """)
             logger.info("calls.initial_greeting column verified")
+
+            # Monthly number rental: track last bill date per phone number
+            await conn.execute("""
+                ALTER TABLE phone_numbers
+                    ADD COLUMN IF NOT EXISTS last_billed_at TIMESTAMPTZ
+            """)
+            # Backfill existing numbers so first monthly charge is ~1 month after provision
+            await conn.execute("""
+                UPDATE phone_numbers
+                   SET last_billed_at = created_at
+                 WHERE last_billed_at IS NULL
+                   AND created_at IS NOT NULL
+            """)
+            logger.info("phone_numbers.last_billed_at column verified")
+
+            # Rate-limit low-balance Resend emails (once per day per account)
+            await conn.execute("""
+                ALTER TABLE accounts
+                    ADD COLUMN IF NOT EXISTS last_low_balance_email_at TIMESTAMPTZ
+            """)
+            logger.info("accounts.last_low_balance_email_at column verified")
     except Exception as e:
         logger.error("Database connection failed: %s", e)
         logger.warning("Server starting WITHOUT database — fix DATABASE_URL in .env")

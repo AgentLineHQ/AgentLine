@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     BASE_URL: str = "http://localhost:8000"
     WEBHOOK_SECRET_SALT: str = "change-me-in-production"
 
+    # Resend (transactional email — low balance alerts, etc.)
+    RESEND_API_KEY: str = ""
+    RESEND_FROM_EMAIL: str = "AgentLine <billing@agentline.cloud>"
+    # Published template id or alias in the Resend dashboard (e.g. "Low balance")
+    RESEND_LOW_BALANCE_TEMPLATE: str = "Low balance"
+
     # Database — override if needed, otherwise derived from Supabase URL
     DATABASE_URL: str = ""
 

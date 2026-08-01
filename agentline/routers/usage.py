@@ -10,6 +10,7 @@ from agentline.database import get_db
 from agentline.billing import (
     CALL_RATE_PER_MINUTE,
     NUMBER_PROVISION_COST,
+    NUMBER_MONTHLY_COST,
     calculate_call_cost,
     credit_account,
 )
@@ -79,9 +80,13 @@ async def get_usage(
         "active_numbers": number_count or 0,
         "billing": {
             "estimated_call_cost_this_month": estimated_call_cost,
+            "estimated_number_monthly_cost": round(
+                (number_count or 0) * NUMBER_MONTHLY_COST, 2
+            ),
             "rates": {
                 "call_per_minute": CALL_RATE_PER_MINUTE,
                 "number_provision": NUMBER_PROVISION_COST,
+                "number_monthly": NUMBER_MONTHLY_COST,
             },
         },
     }
@@ -112,7 +117,7 @@ async def get_balance(
 async def get_transactions(
     limit: int = Query(50, ge=1, le=200, description="Maximum number of transactions to return (1-200)"),
     offset: int = Query(0, ge=0, description="Number of transactions to skip for pagination"),
-    txn_type: str | None = Query(None, description="Filter by transaction type: 'call_charge', 'number_provision', 'topup', or 'refund'"),
+    txn_type: str | None = Query(None, description="Filter by transaction type: 'call_charge', 'number_provision', 'number_monthly', 'topup', or 'refund'"),
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
