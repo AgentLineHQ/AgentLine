@@ -18,8 +18,6 @@ from agentline.signalwire_client import (
 )
 from agentline.billing import (
     NUMBER_PROVISION_COST,
-    NUMBER_MONTHLY_COST,
-    apply_monthly_number_fees_for_account,
     check_balance,
     debit_account,
 )
@@ -44,8 +42,7 @@ async def provision(
     provider, then attaches it to the specified AI agent. Once attached,
     the agent can make outbound calls and receive inbound calls on this number.
 
-    Each AI agent can only have ONE active phone number.
-    Costs $2.00 on provision (first month), then $2.00 per month while active.
+    Each AI agent can only have ONE active phone number. Costs $2.00 per number.
 
     Request body:
       - agent_id: str (required) — the AI agent to assign this number to
@@ -77,8 +74,7 @@ async def provision(
             "Reassign it first with PATCH /v1/numbers/{number_id}/reassign before provisioning a new one.",
         )
 
-    # Lazy monthly rental for existing numbers, then check balance for provision
-    await apply_monthly_number_fees_for_account(db, account["id"])
+    # Check balance before provisioning ($2.00 per number)
     try:
         await check_balance(db, account["id"], NUMBER_PROVISION_COST)
     except ValueError as e:
@@ -101,8 +97,8 @@ async def provision(
     try:
         await db.execute(
             """INSERT INTO phone_numbers
-               (id, account_id, agent_id, provider_id, phone_number, country, status, last_billed_at)
-               VALUES ($1, $2, $3, $4, $5, $6, 'active', now())""",
+               (id, account_id, agent_id, provider_id, phone_number, country, status)
+               VALUES ($1, $2, $3, $4, $5, $6, 'active')""",
             number_id,
             account["id"],
             body.agent_id,
@@ -160,7 +156,6 @@ async def provision(
         "number_type": body.number_type,
         "status": "active",
         "cost": NUMBER_PROVISION_COST,
-        "monthly_cost": NUMBER_MONTHLY_COST,
         "balance_remaining": new_balance,
     }
 
@@ -177,9 +172,6 @@ async def list_numbers(
     including which agent each number is assigned to, the number's
     status (active/released), and country.
     """
-    # Lazy monthly number rental ($2 per active number past 1 month)
-    await apply_monthly_number_fees_for_account(db, account["id"])
-
     rows = await db.fetch(
         """SELECT * FROM phone_numbers
            WHERE account_id = $1
@@ -257,8 +249,7 @@ async def attach_existing_number(
     if not phone_number.startswith("+1"):
         raise HTTPException(400, "Only US numbers (+1) via SignalWire are supported.")
 
-    # Lazy monthly rental, then check balance for attach fee
-    await apply_monthly_number_fees_for_account(db, account["id"])
+    # ── Billing: check balance before attaching ($2.00 per number) ──
     try:
         await check_balance(db, account["id"], NUMBER_PROVISION_COST)
     except ValueError as e:
@@ -270,8 +261,8 @@ async def attach_existing_number(
     try:
         await db.execute(
             """INSERT INTO phone_numbers
-               (id, account_id, agent_id, provider_id, phone_number, country, status, last_billed_at)
-               VALUES ($1, $2, $3, $4, $5, $6, 'active', now())""",
+               (id, account_id, agent_id, provider_id, phone_number, country, status)
+               VALUES ($1, $2, $3, $4, $5, $6, 'active')""",
             number_id,
             account["id"],
             agent_id,
@@ -311,7 +302,6 @@ async def attach_existing_number(
         "phone_number": phone_number,
         "status": "active",
         "cost": NUMBER_PROVISION_COST,
-        "monthly_cost": NUMBER_MONTHLY_COST,
         "webhooks": webhook_status,
     }
 

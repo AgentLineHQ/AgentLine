@@ -9,7 +9,6 @@ CREATE TABLE accounts (
     supabase_user_id TEXT UNIQUE,   -- Links to Supabase Auth user
     balance          NUMERIC(12,4) NOT NULL DEFAULT 10.0000,  -- USD balance, starts with $10
     default_voice_id TEXT,          -- Account-level default Cartesia voice UUID
-    last_low_balance_email_at TIMESTAMPTZ,  -- last Resend "Low balance" email (rate limit)
     created_at       TIMESTAMPTZ DEFAULT now()
 );
 
@@ -45,8 +44,7 @@ CREATE TABLE phone_numbers (
     country        TEXT DEFAULT 'IN',
     status         TEXT DEFAULT 'active',
     created_at     TIMESTAMPTZ DEFAULT now(),
-    released_at    TIMESTAMPTZ,
-    last_billed_at TIMESTAMPTZ  -- last provision/monthly rental charge; used for $2/mo billing
+    released_at    TIMESTAMPTZ
 );
 
 -- Enforce: each agent can only have ONE active number
@@ -138,7 +136,7 @@ CREATE TABLE IF NOT EXISTS billing_ledger (
     account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     amount          NUMERIC(12,4) NOT NULL,   -- negative = debit, positive = credit
     balance_after   NUMERIC(12,4) NOT NULL,   -- snapshot of balance after this txn
-    txn_type        TEXT NOT NULL,             -- 'call_charge', 'number_provision', 'number_monthly', 'topup', 'refund'
+    txn_type        TEXT NOT NULL,             -- 'call_charge', 'number_provision', 'topup', 'refund'
     reference_id    TEXT,                      -- call_id, number_id, or payment_id
     description     TEXT,
     created_at      TIMESTAMPTZ DEFAULT now()

@@ -309,8 +309,7 @@ If using the hosted version at [agentline.cloud](https://agentline.cloud):
 | Item | Cost |
 |------|------|
 | Voice calls (inbound/outbound) | $0.10/min (billed per second) |
-| Phone number (provision) | $2.00 (first month) |
-| Phone number (monthly rental) | $2.00 per active number / month |
+| Phone number | $2.00 (one-time) |
 | SMS (inbound) | Free |
 
 Self-hosted: you pay only your provider costs (SignalWire, Deepgram, Cartesia, OpenAI).

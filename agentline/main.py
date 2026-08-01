@@ -1,10 +1,6 @@
 """
 AgentLine — FastAPI Application Entry Point
 Mounts all routers and manages startup/shutdown lifecycle.
-
-Monthly $2 number rental is applied lazily on authenticated API requests
-(see billing.charge_due_monthly_number_fees) — no background scheduler /
-cron process, so this stays compatible with serverless hosts (e.g. Vercel).
 """
 
 import logging

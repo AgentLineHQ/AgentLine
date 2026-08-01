@@ -304,7 +304,7 @@ Priority (highest wins): per-call → per-agent → per-account
 
 ## Phone Numbers
 
-Each agent needs one phone number. Only US numbers supported. **$2.00 on provision (first month), then $2.00/month while the number stays active.**
+Each agent needs one phone number. Only US numbers supported. **$2.00 per number.**
 
 ### Provision (Buy) a Number
 
@@ -338,8 +338,7 @@ If no numbers are available for the requested area code, the API returns an erro
 | Item | Cost |
 |------|------|
 | Calls (in/out) | $0.10/min (billed per second) |
-| Phone number (provision) | $2.00 (first month) |
-| Phone number (monthly rental) | $2.00 per active number / month |
+| Phone number | $2.00 (one-time) |
 
 ---
 
