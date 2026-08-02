@@ -196,7 +196,7 @@ mcp = FastApiMCP(
         "Use cases: AI phone agents, automated outbound calling, AI receptionist, "
         "voice AI assistants, phone-based customer support bots, "
         "conversational AI over the phone, and programmable telephony for LLMs. "
-        "Requires Authorization: Bearer sk_live_xxx header."
+        "Requires Authorization: Bearer al_live_xxx header (legacy sk_live_ keys also accepted)."
     ),
     describe_full_response_schema=True,
     describe_all_responses=True,
