@@ -80,6 +80,75 @@ async def init_db():
                     ADD COLUMN IF NOT EXISTS initial_greeting TEXT
             """)
             logger.info("calls.initial_greeting column verified")
+
+            await conn.execute("""
+                ALTER TABLE agents
+                    ADD COLUMN IF NOT EXISTS owner_phone TEXT
+            """)
+            logger.info("agents.owner_phone column verified")
+
+            try:
+                await conn.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_webhooks_one_per_agent
+                        ON webhooks(account_id, agent_id)
+                """)
+            except Exception as ix_err:
+                logger.warning("Non-fatal: could not create webhooks unique index: %s", ix_err)
+
+            try:
+                await conn.execute("""
+                    ALTER TABLE webhooks
+                        ADD COLUMN IF NOT EXISTS signature_header TEXT DEFAULT 'X-Webhook-Signature'
+                """)
+                logger.info("webhooks.signature_header column verified")
+            except Exception as col_err:
+                logger.warning("Non-fatal: could not add signature_header column: %s", col_err)
+
+            try:
+                await conn.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_ledger_unique_ref
+                        ON billing_ledger(account_id, txn_type, reference_id)
+                        WHERE reference_id IS NOT NULL
+                """)
+            except Exception as ix_err:
+                logger.warning(
+                    "Non-fatal: could not create billing_ledger unique index: %s", ix_err,
+                )
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS relay_turns (
+                    call_id         TEXT NOT NULL REFERENCES calls(id) ON DELETE CASCADE,
+                    turn_id         TEXT NOT NULL,
+                    account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                    push_token_hash TEXT NOT NULL,
+                    state           TEXT NOT NULL DEFAULT 'waiting',
+                    context         TEXT,
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    context_at      TIMESTAMPTZ,
+                    consumed_at     TIMESTAMPTZ,
+                    PRIMARY KEY (call_id, turn_id)
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_relay_turns_waiting
+                    ON relay_turns(call_id, created_at) WHERE state = 'waiting'
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_connections (
+                    agent_id      TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+                    account_id    TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    connection_id TEXT NOT NULL,
+                    runtime       TEXT NOT NULL DEFAULT 'unknown',
+                    expires_at    TIMESTAMPTZ NOT NULL,
+                    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_agent_connections_active
+                    ON agent_connections(account_id, expires_at)
+            """)
+            logger.info("durable relay tables verified")
     except Exception as e:
         logger.error("Database connection failed: %s", e)
         logger.warning("Server starting WITHOUT database — fix DATABASE_URL in .env")

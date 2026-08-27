@@ -147,6 +147,19 @@ def _get_relay_base_url():
     return f"https://{settings.SIGNALWIRE_SPACE_URL}/api/relay/rest"
 
 
+def callback_url_data() -> dict:
+    """LAML request body that points a number's voice/SMS/status callbacks here."""
+    base = settings.base_url_clean
+    return {
+        "VoiceUrl": f"{base}/signalwire/inbound",
+        "VoiceMethod": "POST",
+        "SmsUrl": f"{base}/signalwire/sms",
+        "SmsMethod": "POST",
+        "StatusCallback": f"{base}/signalwire/inbound_hangup",
+        "StatusCallbackMethod": "POST",
+    }
+
+
 async def provision_number(
     country: str = "US",
     number_type: str = "local",
@@ -244,14 +257,7 @@ async def provision_number(
                     await client.post(
                         f"{_get_base_url()}/IncomingPhoneNumbers/{laml_sid}.json",
                         auth=_get_auth(),
-                        data={
-                            "VoiceUrl": f"{settings.base_url_clean}/signalwire/inbound",
-                            "VoiceMethod": "POST",
-                            "SmsUrl": f"{settings.base_url_clean}/signalwire/sms",
-                            "SmsMethod": "POST",
-                            "StatusCallback": f"{settings.base_url_clean}/signalwire/inbound_hangup",
-                            "StatusCallbackMethod": "POST",
-                        },
+                        data=callback_url_data(),
                     )
                     logger.info("Configured webhooks for %s (SID: %s)", chosen_number, laml_sid)
                 except Exception as e:
@@ -290,14 +296,7 @@ async def configure_number_webhooks(provider_id: str) -> None:
             resp = await client.post(
                 f"{_get_base_url()}/IncomingPhoneNumbers/{provider_id}.json",
                 auth=_get_auth(),
-                data={
-                    "VoiceUrl": f"{settings.base_url_clean}/signalwire/inbound",
-                    "VoiceMethod": "POST",
-                    "SmsUrl": f"{settings.base_url_clean}/signalwire/sms",
-                    "SmsMethod": "POST",
-                    "StatusCallback": f"{settings.base_url_clean}/signalwire/inbound_hangup",
-                    "StatusCallbackMethod": "POST",
-                },
+                data=callback_url_data(),
             )
             resp.raise_for_status()
             logger.info("Configured webhook URLs for SignalWire number: %s", provider_id)

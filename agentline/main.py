@@ -5,13 +5,27 @@ Mounts all routers and manages startup/shutdown lifecycle.
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from agentline.database import init_db, close_db
 from agentline.redis_client import init_redis, close_redis
-from agentline.routers import agents, numbers, messages, calls, usage, events, signalwire_events, billing_api, voice_settings
+from agentline.routers import (
+    agents,
+    numbers,
+    messages,
+    calls,
+    usage,
+    events,
+    signalwire_events,
+    billing_api,
+    voice_settings,
+    webhooks,
+    discovery,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -25,33 +39,50 @@ logger = logging.getLogger("agentline")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage startup and shutdown of database and Redis connections."""
+    import asyncio
+
     logger.info("Starting AgentLine...")
     await init_db()
     await init_redis()
 
-    # Reconfigure existing numbers with correct StatusCallback for billing
-    try:
-        await _reconfigure_number_callbacks()
-    except Exception as e:
-        logger.warning("Non-fatal: failed to reconfigure number callbacks on startup: %s", e)
+    reconfig_task = asyncio.create_task(_reconfigure_number_callbacks_safe())
 
     logger.info("AgentLine ready.")
     yield
     logger.info("Shutting down AgentLine...")
+    if not reconfig_task.done():
+        reconfig_task.cancel()
+        try:
+            await reconfig_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    try:
+        from agentline.voice.tts import close_tts
+        await close_tts()
+    except Exception as e:
+        logger.warning("Non-fatal: error closing TTS connections: %s", e)
     await close_redis()
     await close_db()
     logger.info("AgentLine stopped.")
 
 
+async def _reconfigure_number_callbacks_safe():
+    try:
+        await _reconfigure_number_callbacks()
+    except Exception as e:
+        logger.warning("Non-fatal: failed to reconfigure number callbacks on startup: %s", e)
+
+
 async def _reconfigure_number_callbacks():
     """
-    Ensure all active SignalWire numbers have the correct StatusCallback URL
-    so inbound call hangups are properly received and billed.
+    Ensure all active SignalWire numbers have the correct callback URLs
+    (voice, SMS, status) so inbound calls and hangups are received and billed.
     Runs once on startup — safe to call repeatedly (idempotent).
     """
     import httpx
     from agentline.config import settings
     from agentline.database import get_db_conn
+    from agentline.signalwire_client import callback_url_data
 
     if not all([settings.SIGNALWIRE_PROJECT_ID, settings.SIGNALWIRE_TOKEN, settings.SIGNALWIRE_SPACE_URL]):
         logger.info("Skipping number callback reconfiguration — SignalWire not configured.")
@@ -59,7 +90,6 @@ async def _reconfigure_number_callbacks():
 
     sw_base = f"https://{settings.SIGNALWIRE_SPACE_URL}/api/laml/2010-04-01/Accounts/{settings.SIGNALWIRE_PROJECT_ID}"
     auth = (settings.SIGNALWIRE_PROJECT_ID, settings.SIGNALWIRE_TOKEN)
-    base = settings.base_url_clean
 
     async with get_db_conn() as db:
         rows = await db.fetch(
@@ -69,25 +99,19 @@ async def _reconfigure_number_callbacks():
     if not rows:
         return
 
-    logger.info("Reconfiguring StatusCallback on %d active number(s)...", len(rows))
+    logger.info("Reconfiguring callbacks on %d active number(s)...", len(rows))
     async with httpx.AsyncClient(timeout=10.0) as client:
         for r in rows:
             try:
-                await client.post(
+                resp = await client.post(
                     f"{sw_base}/IncomingPhoneNumbers/{r['provider_id']}.json",
                     auth=auth,
-                    data={
-                        "VoiceUrl": f"{base}/signalwire/inbound",
-                        "VoiceMethod": "POST",
-                        "SmsUrl": f"{base}/signalwire/sms",
-                        "SmsMethod": "POST",
-                        "StatusCallback": f"{base}/signalwire/inbound_hangup",
-                        "StatusCallbackMethod": "POST",
-                    },
+                    data=callback_url_data(),
                 )
-                logger.info("  ✓ %s — StatusCallback updated", r["phone_number"])
+                resp.raise_for_status()
+                logger.info("  ✓ %s — callbacks updated", r["phone_number"])
             except Exception as e:
-                logger.warning("  ✗ %s — failed: %s", r["phone_number"], e)
+                logger.warning("  ✗ %s — failed: %s (events for this number may be missed)", r["phone_number"], e)
 
 
 app = FastAPI(
@@ -98,7 +122,7 @@ app = FastAPI(
         "Build AI phone agents, automated outbound calling systems, AI receptionists, "
         "and conversational voice AI assistants over real phone lines."
     ),
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -111,6 +135,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Static assets (relay connector)
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
 # Mount routers
 
 app.include_router(agents.router)
@@ -122,13 +151,15 @@ app.include_router(events.router)
 app.include_router(signalwire_events.router)
 app.include_router(billing_api.router)
 app.include_router(voice_settings.router)
+app.include_router(webhooks.router)
+app.include_router(discovery.router)
 
 
 @app.get("/", tags=["Health"], operation_id="health_check")
 async def root():
     return {
         "service": "AgentLine",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "status": "operational",
         "mcp_endpoint": "/mcp",
     }
@@ -151,8 +182,9 @@ async def health():
 async def debug_urls():
     """Show the callback URLs that providers will receive — useful for debugging."""
     from agentline.config import settings
+    from agentline.signalwire_client import callback_url_data
     base = settings.base_url_clean
-    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
+    ws_base = settings.ws_base_url
     return {
         "base_url_raw": settings.BASE_URL,
         "base_url_clean": base,
@@ -163,6 +195,7 @@ async def debug_urls():
             "inbound_url": f"{base}/signalwire/inbound",
             "inbound_hangup_url": f"{base}/signalwire/inbound_hangup",
             "sms_url": f"{base}/signalwire/sms",
+            "number_callback_body": callback_url_data(),
         },
         "voice_pipeline": {
             "stt": "Deepgram Nova-2 ($0.006/min)",
@@ -214,6 +247,7 @@ mcp = FastApiMCP(
         "health_check",
         "health_status",
         "debug_callback_urls",
+        "agentline_integration_discovery",
         # ── SMS: sending is not enabled ──
         "send_sms",
         "list_conversations",
@@ -240,7 +274,7 @@ mcp = FastApiMCP(
 # FastApiMCP only sets name + description on the underlying Server.
 # We patch in version, instructions, and website_url for full metadata.
 try:
-    mcp.server.version = "0.2.0"
+    mcp.server.version = "0.3.0"
     mcp.server.instructions = (
         "AgentLine gives AI agents real phone numbers and human-like voices. "
         "Start by creating an agent (create_agent), then buy a phone number "
@@ -308,6 +342,26 @@ _TOOL_ANNOTATIONS = {
     "hangup_call": mcp_types.ToolAnnotations(
         title="Hang Up Phone Call",
         readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True,
+    ),
+    "push_call_context": mcp_types.ToolAnnotations(
+        title="Push Context to Live Call (Relay Mode)",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False,
+    ),
+    "get_webhook": mcp_types.ToolAnnotations(
+        title="List Agent Webhooks",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    "set_webhook": mcp_types.ToolAnnotations(
+        title="Set Agent Webhook",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True,
+    ),
+    "delete_webhook": mcp_types.ToolAnnotations(
+        title="Delete Agent Webhook",
+        readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False,
+    ),
+    "test_webhook": mcp_types.ToolAnnotations(
+        title="Test Agent Webhook",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True,
     ),
     # Messages
     "list_messages": mcp_types.ToolAnnotations(

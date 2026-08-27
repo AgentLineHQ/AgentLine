@@ -3,6 +3,7 @@ AgentLine — Agents Router
 Full CRUD for agent configuration.
 """
 
+import logging
 import secrets
 from datetime import datetime, timezone
 
@@ -11,8 +12,21 @@ from fastapi import APIRouter, Depends, HTTPException
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
 from agentline.models.agent import AgentCreate, AgentUpdate, AgentOut
+from agentline.voice.voices import is_valid_voice_id
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/agents", tags=["Agents"])
+
+
+def _validate_voice_id(voice_id: str | None) -> None:
+    """Reject voice IDs that would silently resolve to the default on calls."""
+    if voice_id is not None and not is_valid_voice_id(voice_id):
+        raise HTTPException(
+            400,
+            "Invalid voice_id. Use a preset name (see GET /v1/voices) or a "
+            "Cartesia voice UUID.",
+        )
 
 
 @router.post("", response_model=AgentOut, operation_id="create_agent")
@@ -33,29 +47,57 @@ async def create_agent(
       - system_prompt: Instructions that define the agent's personality and behavior on calls
       - initial_greeting: What the AI agent says when the call connects
       - voice_id: TTS voice preset (e.g. "female-1") or Cartesia UUID
-      - model_tier: LLM model tier — "fast" (GPT-4o-mini) or "quality" (GPT-4o)
+      - model_tier: LLM model tier — "turbo", "balanced", or "max"
       - transfer_number: Phone number to transfer calls to (e.g. a human operator)
       - voicemail_message: Message the agent leaves if the call goes to voicemail
+      - owner_phone: Owner number — calls from it enter task mode
     """
+    _validate_voice_id(body.voice_id)
     agent_id = f"agt_{secrets.token_urlsafe(12)}"
     now = datetime.now(timezone.utc)
 
-    await db.execute(
-        """INSERT INTO agents
-           (id, account_id, name, system_prompt, initial_greeting,
-            voice_id, model_tier, transfer_number, voicemail_message, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
-        agent_id,
-        account["id"],
-        body.name,
-        body.system_prompt,
-        body.initial_greeting,
-        body.voice_id,
-        body.model_tier,
-        body.transfer_number,
-        body.voicemail_message,
-        now,
-    )
+    # Try INSERT with owner_phone; fall back without it if migration hasn't run yet.
+    try:
+        await db.execute(
+            """INSERT INTO agents
+               (id, account_id, name, system_prompt, initial_greeting,
+                voice_id, model_tier, transfer_number, voicemail_message,
+                owner_phone, created_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)""",
+            agent_id,
+            account["id"],
+            body.name,
+            body.system_prompt,
+            body.initial_greeting,
+            body.voice_id,
+            body.model_tier,
+            body.transfer_number,
+            body.voicemail_message,
+            body.owner_phone,
+            now,
+        )
+    except Exception as e:
+        if "owner_phone" in str(e):
+            # Column doesn't exist yet — insert without it
+            await db.execute(
+                """INSERT INTO agents
+                   (id, account_id, name, system_prompt, initial_greeting,
+                    voice_id, model_tier, transfer_number, voicemail_message,
+                    created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
+                agent_id,
+                account["id"],
+                body.name,
+                body.system_prompt,
+                body.initial_greeting,
+                body.voice_id,
+                body.model_tier,
+                body.transfer_number,
+                body.voicemail_message,
+                now,
+            )
+        else:
+            raise
 
     return AgentOut(
         id=agent_id,
@@ -67,6 +109,7 @@ async def create_agent(
         model_tier=body.model_tier,
         transfer_number=body.transfer_number,
         voicemail_message=body.voicemail_message,
+        owner_phone=body.owner_phone,
         created_at=now,
     )
 
@@ -100,7 +143,7 @@ async def get_agent(
     Get details of a specific AI voice agent.
 
     Returns the agent's full configuration including system prompt,
-    voice settings, greeting, model tier, and transfer number.
+    voice settings, greeting, and transfer number.
     """
     row = await db.fetchrow(
         "SELECT * FROM agents WHERE id = $1 AND account_id = $2",
@@ -123,7 +166,7 @@ async def update_agent(
     Update an AI voice agent's configuration.
 
     Modify any combination of the agent's settings: system prompt,
-    voice, greeting, model tier, transfer number, or voicemail message.
+    voice, greeting, transfer number, or voicemail message.
     Changes take effect on the next call the agent handles.
     Only include the fields you want to change — unset fields are preserved.
     """
@@ -140,21 +183,37 @@ async def update_agent(
     if not updates:
         raise HTTPException(400, "No fields to update.")
 
-    set_clauses = []
-    values = []
-    for i, (field, value) in enumerate(updates.items(), start=1):
-        set_clauses.append(f"{field} = ${i}")
-        values.append(value)
+    if "voice_id" in updates:
+        _validate_voice_id(updates["voice_id"])
 
-    values.append(agent_id)
-    values.append(account["id"])
+    def _build_update_query(upd: dict):
+        set_clauses = []
+        values = []
+        for i, (field, value) in enumerate(upd.items(), start=1):
+            set_clauses.append(f"{field} = ${i}")
+            values.append(value)
+        values.append(agent_id)
+        values.append(account["id"])
+        query = f"""UPDATE agents
+                    SET {', '.join(set_clauses)}
+                    WHERE id = ${len(values) - 1} AND account_id = ${len(values)}
+                    RETURNING *"""
+        return query, values
 
-    query = f"""UPDATE agents
-                SET {', '.join(set_clauses)}
-                WHERE id = ${len(values) - 1} AND account_id = ${len(values)}
-                RETURNING *"""
+    query, values = _build_update_query(updates)
 
-    row = await db.fetchrow(query, *values)
+    try:
+        row = await db.fetchrow(query, *values)
+    except Exception as e:
+        if "owner_phone" in str(e) and "owner_phone" in updates:
+            # Column doesn't exist yet — retry without it
+            updates.pop("owner_phone")
+            if not updates:
+                raise HTTPException(400, "owner_phone is not yet available. Run the migration first.")
+            query, values = _build_update_query(updates)
+            row = await db.fetchrow(query, *values)
+        else:
+            raise
     return dict(row)
 
 
@@ -167,9 +226,9 @@ async def delete_agent(
     """
     Delete an AI voice agent.
 
-    Permanently removes the agent and detaches any phone numbers
-    assigned to it. Detached numbers remain active on your account
-    and can be reassigned to another agent.
+    Permanently removes the agent, its calls, messages, and conversations,
+    and detaches any phone numbers assigned to it. Detached numbers remain
+    active on your account and can be reassigned to another agent.
     """
     existing = await db.fetchrow(
         "SELECT * FROM agents WHERE id = $1 AND account_id = $2",
@@ -184,6 +243,20 @@ async def delete_agent(
         "UPDATE phone_numbers SET agent_id = NULL WHERE agent_id = $1",
         agent_id,
     )
+
+    # Remove dependents that reference agents(id) without a cascade FK.
+    # Done in app code so agent deletion never hits a FK violation.
+    # Non-fatal if it fails.
+    try:
+        await db.execute("DELETE FROM webhooks WHERE agent_id = $1", agent_id)
+    except Exception as e:
+        logger.warning("Non-fatal: could not delete webhook for agent %s: %s", agent_id[:12], e)
+
+    # calls/messages/conversations hold plain FKs to agents(id) — delete them
+    # (and everything cascading off calls) before the agent row itself.
+    await db.execute("DELETE FROM calls WHERE agent_id = $1", agent_id)
+    await db.execute("DELETE FROM messages WHERE agent_id = $1", agent_id)
+    await db.execute("DELETE FROM conversations WHERE agent_id = $1", agent_id)
 
     await db.execute("DELETE FROM agents WHERE id = $1", agent_id)
 

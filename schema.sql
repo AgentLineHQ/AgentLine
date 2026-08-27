@@ -32,6 +32,7 @@ CREATE TABLE agents (
     model_tier       TEXT DEFAULT 'balanced',
     transfer_number  TEXT,
     voicemail_message TEXT,
+    owner_phone      TEXT,          -- Owner's phone (E.164). Calls from this number trigger task mode.
     created_at       TIMESTAMPTZ DEFAULT now()
 );
 
@@ -100,11 +101,15 @@ CREATE TABLE conversations (
 CREATE TABLE webhooks (
     id         TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE,
-    agent_id   TEXT REFERENCES agents(id),
+    agent_id   TEXT REFERENCES agents(id) NOT NULL,
     url        TEXT NOT NULL,
     secret     TEXT NOT NULL,
+    signature_header TEXT DEFAULT 'X-Webhook-Signature',
     created_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE UNIQUE INDEX idx_webhooks_one_per_agent
+    ON webhooks (account_id, agent_id);
 
 -- Agent response queue: text that agents POST via /v1/calls/{id}/speak
 -- gets spoken on the active call by the Plivo wait loop.
@@ -154,10 +159,39 @@ CREATE INDEX idx_messages_account ON messages(account_id, created_at DESC);
 CREATE INDEX idx_messages_conversation ON messages(conversation_id, created_at DESC);
 CREATE INDEX idx_conversations_number_contact ON conversations(number_id, contact_number);
 CREATE INDEX idx_webhooks_agent ON webhooks(agent_id);
-CREATE INDEX idx_webhooks_account ON webhooks(account_id) WHERE agent_id IS NULL;
 CREATE INDEX idx_accounts_supabase ON accounts(supabase_user_id) WHERE supabase_user_id IS NOT NULL;
 CREATE INDEX idx_event_mailbox_account ON event_mailbox(account_id, created_at ASC);
 CREATE INDEX idx_event_mailbox_agent ON event_mailbox(account_id, agent_id, created_at ASC);
 CREATE INDEX idx_event_mailbox_expiry ON event_mailbox(account_id, created_at);
 CREATE INDEX idx_billing_ledger_account ON billing_ledger(account_id, created_at DESC);
 CREATE INDEX idx_billing_ledger_type ON billing_ledger(account_id, txn_type);
+
+-- Durable, turn-correlated live context and outbound agent connections.
+CREATE TABLE IF NOT EXISTS relay_turns (
+    call_id         TEXT NOT NULL REFERENCES calls(id) ON DELETE CASCADE,
+    turn_id         TEXT NOT NULL,
+    account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    push_token_hash TEXT NOT NULL,
+    state           TEXT NOT NULL DEFAULT 'waiting',
+    context         TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    context_at      TIMESTAMPTZ,
+    consumed_at     TIMESTAMPTZ,
+    PRIMARY KEY (call_id, turn_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_relay_turns_waiting
+    ON relay_turns(call_id, created_at) WHERE state = 'waiting';
+
+CREATE TABLE IF NOT EXISTS agent_connections (
+    agent_id      TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+    account_id    TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    connection_id TEXT NOT NULL,
+    runtime       TEXT NOT NULL DEFAULT 'unknown',
+    expires_at    TIMESTAMPTZ NOT NULL,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_connections_active
+    ON agent_connections(account_id, expires_at);

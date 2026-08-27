@@ -49,12 +49,17 @@ Your AI Agent  →  AgentLine API  →  Real Phone Calls
 
 - 📞 **Voice Calls** — Make and receive real phone calls through a simple API
 - 🎙️ **AI Voice Pipeline** — Built-in STT (Deepgram) + LLM (GPT-4o) + TTS (Cartesia) pipeline
+- 🎛️ **DTMF / IVR** — Real touch-tone audio so outbound agents can navigate phone menus and leave voicemail
+- ⚡ **Semantic turn-taking** — Adaptive end-of-turn detection with fast barge-in instead of a fixed pause
+- 👤 **Owner task mode** — Calls from a registered owner number capture instructions for later execution
 - 💬 **SMS** — Receive and read inbound text messages
 - 🔌 **MCP Server** — Native Model Context Protocol support for Claude Desktop and Cursor
 - 📋 **Skill File** — One-file install for any AI agent (Claude Code, Cursor, OpenClaw)
 - 🌍 **Multi-Provider** — SignalWire (US) with pluggable provider architecture
 - 📝 **Transcripts** — Automatic call transcription with full conversation history
-- 📬 **Event Mailbox** — Poll-based event system for agents without webhook endpoints
+- 🔄 **Persistent Agent Relay** — outbound WebSocket with reconnect, ACK/replay, turn-safe context, and runtime-aware setup
+- 🪝 **Per-agent webhooks** — Signed JSON POSTs as a fallback when a relay cannot run
+- 📬 **Event Mailbox** — durable fallback for agents without a relay or webhook
 - 💰 **Built-in Billing** — Per-second call billing with balance tracking
 - 🐳 **Docker Ready** — One command to run the entire stack locally
 
@@ -73,21 +78,19 @@ graph LR
     B -->|Events & Transcripts| A
 ```
 
-### Voice Pipeline — Hybrid Relay Mode
+### Voice Pipeline
 
-AgentLine uses an asynchronous **Hybrid Relay** architecture instead of fragile real-time WebSocket streams:
+Live calls stream audio over SignalWire `<Connect><Stream>`:
 
 ```
-Caller dials your agent's number
-  → SignalWire answers the call
-  → Plays TTS greeting to caller
-  → Records caller's speech
-  → Deepgram transcribes (fast, accurate)
-  → LLM generates agent response
-  → Cartesia speaks the response
-  → Loop continues until call ends
-  → Full transcript stored for retrieval
+Caller audio → Deepgram STT → semantic turn-taking
+  → hosted LLM (or live relay context) → Cartesia TTS → caller
 ```
+
+- **Semantic turn-taking** waits longer when the caller is mid-thought and answers immediately on a complete question.
+- **Barge-in** flushes playback as soon as the caller starts speaking.
+- **DTMF** turns `[DTMF:1]` markers into real touch-tone audio for IVR menus.
+- **Relay mode** (optional) pushes each caller turn to a local agent over an outbound WebSocket and speaks the returned context verbatim.
 
 ---
 
@@ -143,6 +146,7 @@ Copy `.env.example` to `.env` and fill in your credentials:
 | `DEEPGRAM_API_KEY` | Yes | Deepgram API key (STT) |
 | `CARTESIA_API_KEY` | Yes | Cartesia API key (TTS) |
 | `OPENAI_API_KEY` | Yes | OpenAI API key (LLM) |
+| `TURN_TAKING_MODEL` | No | Fast OpenAI-compatible model for end-of-turn detection (defaults to `gpt-4o-mini`) |
 | `REDIS_URL` | No | Redis URL (defaults to `localhost:6379`) |
 | `SECRET_KEY` | Yes | App secret key |
 | `BASE_URL` | Yes | Public URL of your deployment |
@@ -166,18 +170,22 @@ Once running, visit `http://localhost:8000/docs` for the interactive Swagger UI.
 | `GET` | `/v1/calls` | List calls |
 | `GET` | `/v1/calls/{id}/transcript` | Get call transcript |
 | `POST` | `/v1/calls/{id}/hangup` | End an active call |
-| `GET` | `/v1/events` | Poll event mailbox (consume) |
+| `POST` | `/v1/calls/{id}/context` | Push live relay context for a caller turn |
+| `GET` | `/.well-known/agentline.json` | Discover relay, webhook, and runtime setup |
+| `GET` | `/v1/events` | Poll event mailbox (fallback) |
+| `WS` | `/v1/events/ws` | Persistent outbound agent relay |
 | `GET` | `/v1/events/peek` | Peek at events (non-destructive) |
+| `GET/POST/DELETE` | `/v1/webhooks` | Configure a per-agent signed webhook |
 | `GET` | `/v1/messages` | List SMS messages |
 | `GET` | `/v1/billing/balance` | Check account balance |
 | `GET` | `/v1/billing/expenditure` | Spending breakdown |
 
 ### Authentication
 
-All requests require an API key:
+All requests require an API key (`al_live_...`; legacy `sk_live_...` keys are still accepted):
 
 ```bash
-curl -H "Authorization: Bearer sk_live_YOUR_KEY" \
+curl -H "Authorization: Bearer al_live_YOUR_KEY" \
      -H "Content-Type: application/json" \
      https://api.agentline.cloud/v1/agents
 ```
@@ -203,7 +211,7 @@ Add to your Claude Desktop config:
       "args": [
         "-y", "mcp-remote@latest",
         "http://localhost:8000/mcp",
-        "--header", "Authorization: Bearer sk_live_YOUR_KEY"
+        "--header", "Authorization: Bearer al_live_YOUR_KEY"
       ]
     }
   }
@@ -221,6 +229,8 @@ Add to your Claude Desktop config:
 | `list_calls` | List call history |
 | `get_call_transcript` | Get the full transcript of a call |
 | `hangup_call` | End an active call |
+| `push_call_context` | Push live relay context for a caller turn |
+| `set_webhook` | Create or replace a per-agent webhook |
 | `buy_phone_number` | Provision a new phone number |
 | `list_phone_numbers` | List all phone numbers |
 | `poll_events` | Poll event mailbox |

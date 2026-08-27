@@ -87,6 +87,55 @@ def resolve_voice_id(voice_id: str | None) -> str:
     return DEFAULT_VOICE_ID
 
 
+def is_valid_voice_id(voice_id: str | None) -> bool:
+    """Return True if *voice_id* is a known preset or a valid Cartesia UUID."""
+    if not voice_id:
+        return False
+    key = voice_id.strip().lower()
+    if key in VOICE_PRESETS:
+        return True
+    return bool(_UUID_RE.match(voice_id.strip()))
+
+
+def voice_id_to_label(voice_id: str | None) -> str:
+    """Return a human-readable label for a resolved Cartesia voice UUID."""
+    if not voice_id:
+        return "the default voice"
+    for name, info in VOICE_PRESETS.items():
+        if info["id"].lower() == voice_id.lower():
+            return f"{info['name']} (preset {name})"
+    return f"a custom voice ({voice_id})"
+
+
+def build_voice_change_prompt(current_voice_id: str | None = None) -> str:
+    """Build the system-prompt block that teaches the LLM to switch voices mid-call."""
+    catalog_lines = [
+        f'  - {name}: {info["name"]} — {info["description"]}'
+        for name, info in VOICE_PRESETS.items()
+    ]
+    catalog = "\n".join(catalog_lines)
+    current_label = voice_id_to_label(current_voice_id)
+    return (
+        "MID-CALL VOICE SWITCHING\n"
+        f"You are currently speaking as: {current_label}.\n"
+        "When the caller asks you to change your voice, sound different, use a "
+        "different tone, or sound like a woman / man / a different person, pick "
+        "the closest matching preset below and emit this marker at the point "
+        "you want the switch to happen:\n"
+        "    [VOICE:preset-name]\n"
+        "The system instantly swaps your voice for everything you say AFTER the "
+        "marker — the marker itself is never spoken aloud.\n"
+        "Rules:\n"
+        "- Speak naturally in your CURRENT voice right up to the marker, e.g. "
+        '"Sure, let me try that. [VOICE:female-2]".\n'
+        "- Use ONLY a preset name from the list below. Never invent a name and "
+        "never use a UUID.\n"
+        "- Only switch when the caller clearly requests it. Never switch "
+        "unprompted, and switch at most once per request.\n"
+        f"Available voice presets:\n{catalog}\n"
+    )
+
+
 def resolve_voice_chain(
     per_call_voice: str | None,
     agent_voice: str | None,
