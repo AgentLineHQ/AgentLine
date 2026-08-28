@@ -1,8 +1,8 @@
 <div align="center">
   <img src="agentline-logo-200.png" alt="AgentLine Logo" width="120" />
-  <h1>AgentLine</h1>
-  <p><strong>Open-source telephony API for AI agents — phone numbers, voice calls, and SMS</strong></p>
-  <p>Give your AI agent a real phone number. Make outbound calls, receive inbound calls, and handle SMS — all through one API. No telecom expertise needed.</p>
+  <h1>AgentLine — Phone API for AI Voice Agents</h1>
+  <p><strong>Open-source AI phone agent platform — real phone numbers, outbound & inbound voice calls, SMS, MCP, and IVR</strong></p>
+  <p>Give Claude, Cursor, OpenClaw, Hermes, or any LLM a real phone number. Make and receive PSTN calls, navigate phone menus, and read transcripts — one FastAPI, no telecom expertise.</p>
 
   <br/>
 
@@ -24,24 +24,35 @@
 
 ## What is AgentLine?
 
-AgentLine is an **open-source AI-native telephony platform** that gives AI agents real phone numbers and human-like voices. It provides a simple REST API and MCP server so AI agents (Claude, Cursor, custom LLM agents) can make and receive phone calls, handle SMS, and retrieve transcripts — without any telecom knowledge.
+AgentLine is an **open-source AI phone agent** / **voice agent telephony API**. It gives coding agents and LLM apps a real US phone number, a voice pipeline (STT + LLM + TTS), and the ability to place **outbound calls**, answer **inbound calls**, handle **SMS**, and walk **IVR / DTMF** menus — over REST or MCP.
+
+Use it as a self-hosted alternative to stitching Twilio Programmable Voice + Deepgram + a voice LLM yourself, or as an open-source counterpart to hosted voice-agent products (Vapi, Retell, Bland).
 
 ```
-Your AI Agent  →  AgentLine API  →  Real Phone Calls
-                                 →  SMS Messages
-                                 →  Call Transcripts
+Your AI Agent (Claude, Cursor, OpenClaw, Hermes, Codex)
+        →  AgentLine REST / MCP
+        →  Real PSTN phone calls, SMS, transcripts
 ```
+
+Works with **Claude Code**, **Claude Desktop**, **Cursor**, **OpenClaw**, **Hermes**, **Codex**, and any MCP or HTTP client.
 
 ### Why AgentLine?
 
-| | AgentLine | Twilio/Vonage | Build It Yourself |
+| | AgentLine | Twilio / Vonage | Vapi / Retell |
 |---|---|---|---|
-| **Built for AI agents** | ✅ Purpose-built | ❌ Built for call centers | ❌ You stitch it together |
-| **Setup time** | 5 minutes | Hours | Weeks |
-| **MCP server** | ✅ Native | ❌ None | ❌ Build your own |
-| **Skill file install** | ✅ One file | ❌ Complex SDK | ❌ Hundreds of lines |
-| **Voice pipeline** | ✅ Included (STT + TTS + LLM) | ❌ BYO | ❌ BYO |
-| **Open source** | ✅ MIT | ❌ Proprietary | ✅ Your code |
+| **Built for AI agents** | ✅ Phone number + voice pipeline | ❌ Call-center APIs, BYO AI | ✅ Hosted voice agents |
+| **MCP + skill file** | ✅ Native | ❌ None | ❌ Rare |
+| **Self-host / MIT** | ✅ Your keys, your data | ❌ Proprietary | ❌ Proprietary SaaS |
+| **Setup** | Minutes | Hours of stitching | Minutes, vendor lock-in |
+| **Outbound + inbound + SMS** | ✅ | ✅ | Varies |
+
+### Use cases
+
+- **AI receptionist** — answer inbound calls with a custom greeting and system prompt
+- **Outbound voice agent** — reminders, follow-ups, feedback, and business inquiries
+- **MCP telephony** — “call this number” from Claude Code, Cursor, or OpenClaw
+- **IVR navigation** — press real DTMF keys on phone menus and leave voicemail
+- **Owner task line** — call your agent from a registered number and give it work to run after hangup
 
 ---
 
@@ -53,9 +64,9 @@ Your AI Agent  →  AgentLine API  →  Real Phone Calls
 - ⚡ **Semantic turn-taking** — Adaptive end-of-turn detection with fast barge-in instead of a fixed pause
 - 👤 **Owner task mode** — Calls from a registered owner number capture instructions for later execution
 - 💬 **SMS** — Receive and read inbound text messages
-- 🔌 **MCP Server** — Native Model Context Protocol support for Claude Desktop and Cursor
-- 📋 **Skill File** — One-file install for any AI agent (Claude Code, Cursor, OpenClaw)
-- 🌍 **Multi-Provider** — SignalWire (US) with pluggable provider architecture
+- 🔌 **MCP Server** — Native Model Context Protocol tools for Claude Desktop, Claude Code, Cursor, OpenClaw, and Codex
+- 📋 **Skill File** — One-file install for Claude Code, Cursor, OpenClaw, Hermes, and similar runtimes
+- 🌍 **PSTN via SignalWire** — US numbers, Twilio-compatible LaML, pluggable provider architecture
 - 📝 **Transcripts** — Automatic call transcription with full conversation history
 - 🔄 **Persistent Agent Relay** — outbound WebSocket with reconnect, ACK/replay, turn-safe context, and runtime-aware setup
 - 🪝 **Per-agent webhooks** — Signed JSON POSTs as a fallback when a relay cannot run
