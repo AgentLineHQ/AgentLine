@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     # Voice pipeline — TTS
     CARTESIA_API_KEY: str = ""
 
+    # Voice Pipeline — Semantic turn-taking classifier model (any
+    # OpenAI-compatible model; small + fast is what matters here).
+    TURN_TAKING_MODEL: str = ""
+
     # LiveKit. Install requirements-livekit.txt when bridging audio in-process.
     LIVEKIT_URL: str = ""
     LIVEKIT_API_KEY: str = ""
@@ -81,6 +85,16 @@ class Settings(BaseSettings):
     def base_url_clean(self) -> str:
         """BASE_URL with trailing slashes stripped to prevent double-slash URLs."""
         return self.BASE_URL.rstrip("/")
+
+    @property
+    def ws_base_url(self) -> str:
+        """Public WebSocket base URL derived from BASE_URL."""
+        base = self.base_url_clean
+        if base.startswith("https://"):
+            return "wss://" + base[len("https://"):]
+        if base.startswith("http://"):
+            return "ws://" + base[len("http://"):]
+        return base
 
     @property
     def db_dsn(self) -> str:

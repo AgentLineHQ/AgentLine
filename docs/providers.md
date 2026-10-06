@@ -68,7 +68,9 @@ TELEPHONY_PROVIDER=myapp.acme:AcmeProvider
 
 ### Built-in
 
-`VOICE_RUNTIME=builtin` runs speech recognition, the language model, and speech synthesis in this process.
+`VOICE_RUNTIME=builtin` runs the in-process pipeline: Deepgram, semantic turn-taking, an OpenAI-compatible LLM (or live relay context), and streaming Cartesia. That path calls those clients directly so barge-in and streaming audio stay intact.
+
+`get_stt()`, `get_tts()`, and `get_llm()` are the extension points for your own runtime. Register a replacement or point the env var at `module:Class`.
 
 | Hook | Default | Env |
 | --- | --- | --- |

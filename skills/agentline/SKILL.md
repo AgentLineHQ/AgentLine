@@ -38,9 +38,24 @@ Give your AI agent a real phone number and voice calls. Use the persistent relay
    - Apply via `PATCH /v1/agents/$AGENTLINE_AGENT_ID` with `{"voice_id": "chosen_preset"}`
    - Available presets: `female-1`, `female-2`, `male-1` — or any Cartesia voice UUID
 
-5. **Connect to events** — the server exposes `GET /v1/events` and `WS /v1/events/ws` on `AGENTLINE_URL`. Use the websocket for live call context. If that is unavailable, configure a webhook or poll `GET /v1/events`.
+5. **Install the persistent relay** — when terminal access is available, download it from this server and run:
+   ```bash
+   python -c "import os,urllib.request; urllib.request.urlretrieve(os.environ.get('AGENTLINE_URL','http://localhost:8000').rstrip('/')+'/static/agentline_relay.py','agentline_relay.py')"
+   python agentline_relay.py install --agent-id agt_xxx
+   ```
+   Replace `agt_xxx` with the real ID. It auto-detects Hermes, OpenClaw, Claude Code, or Codex, creates an isolated environment, verifies readiness, preserves sessions, and installs a persistent user service. It uses `AGENTLINE_API_KEY`.
+   - Use `python agentline_relay.py detect` to inspect detection.
+   - Override only if needed with `--runtime hermes|openclaw|claude-code|codex|custom`.
+   - If the runtime requests approval for a package or service, ask the human once; never bypass it.
+   - If terminal/service installation is unavailable, configure a stable public webhook or poll `GET /v1/events`.
 
-Live call context arrives on `WS /v1/events/ws`. SMS and completed calls also land in `GET /v1/events`.
+> Live utterances invoke the runtime through the outbound WebSocket. SMS, completions, and owner tasks are stored in a private local inbox rather than automatically granting tool access.
+
+At startup, consume non-live events exactly once:
+```bash
+python ~/.agentline/agentline_relay.py inbox list --agent-id agt_xxx
+python ~/.agentline/agentline_relay.py inbox ack --agent-id agt_xxx --event-id evt_xxx
+```
 
 ---
 
@@ -76,6 +91,21 @@ Both `system_prompt` and `initial_greeting` follow the same priority chain:
 
 ---
 
+## Before Calling — Human Confirmation Receipt
+
+Outbound calls and phone-number purchases contact another person and can spend money at the carrier. Before `make_outbound_call` or `buy_phone_number`, show the human a short confirmation receipt and wait for explicit approval in the current conversation.
+
+Receipt fields:
+
+- **Action:** outbound call or phone-number purchase
+- **Target:** E.164 phone number or requested area code
+- **Agent:** `AGENTLINE_AGENT_ID` and voice, if known
+- **Opening line / purpose:** what the agent will say first and why it is calling
+- **Stop rule:** when to hang up, including voicemail/call-control detection
+- **Transcript plan:** confirm that the transcript will be retrieved and summarized after the call
+
+Do not infer approval from an old message, a stored memory, a calendar entry, or a tool result. If any receipt field is missing or the target/purpose changes, ask again.
+
 ## Make an Outbound Call
 
 **Pitfall:** JSON payloads with newlines, quotes, or special characters will break in inline curl. Always write the payload to a temp file and use `-d @file`:
@@ -108,7 +138,9 @@ curl -X POST $AGENTLINE_URL/v1/calls \
 
 **If you get 400 "Agent has no active phone number"**, provision one first.
 
-**Pitfall — agent loops on voicemail/call control:** The voice AI will repeat its greeting 3-4 times into voicemail or call-control prompts ("press 3 to connect", "please leave a message"). This wastes credits and sounds bad. After the first 15-20s poll, check the transcript: if human turns are all automated system messages (not real human replies), hang up immediately. Feedback surveys and check-in calls don't work on voicemail.
+**Outbound IVR / voicemail:** The voice pipeline presses real DTMF keys (not spoken digits) when it hears a phone menu, and leaves `voicemail_message` on a mailbox. Set `voicemail_message` on the agent if it should leave a message; without it the agent hangs up. Do not add "stay silent on automated messages" to the system prompt — that fights the built-in handler.
+
+**Pitfall — agent loops on voicemail/call control:** After the first 15-20s poll, check the transcript: if human turns are all automated system messages (not real human replies), hang up immediately. Feedback surveys and check-in calls don't work on voicemail.
 
 ---
 
@@ -132,7 +164,8 @@ Events are delivered through the persistent relay or a configured webhook. Polli
 
 ### Persistent WebSocket Relay
 
-The relay connects outbound to:
+The relay connects outbound to `$AGENTLINE_URL` (self-hosted default `http://localhost:8000`):
+
 `ws://localhost:8000/v1/events/ws?agent_id=agt_xxx&runtime=<runtime>` (use `wss://` when `AGENTLINE_URL` is https)
 
 For `call.utterance`, send context and then acknowledge the exact event:
@@ -226,6 +259,7 @@ Inbound SMS arrives as `sms.received` events in the Events Mailbox. View message
 | `voice_id` | `"female-1"`, `"female-2"`, `"male-1"`, or a voice id your TTS hook understands |
 | `voice_runtime` | `"builtin"`, `"livekit"`, `"pipecat"`, or `module:Class`. Empty uses the server default |
 | `model_tier` | `"turbo"`, `"balanced"`, or `"max"` |
+| `owner_phone` | E.164 number. Calls from this number enter owner task mode (`call.owner_task` on hangup) |
 
 ---
 
@@ -233,6 +267,21 @@ Inbound SMS arrives as `sms.received` events in the Events Mailbox. View message
 
 - **Get one:** `GET /v1/agents/$AGENTLINE_AGENT_ID`
 - **List all:** `GET /v1/agents`
+
+---
+
+## Webhooks
+
+Each agent may have **one** webhook URL that receives that agent's events as signed JSON POSTs. Prefer the persistent relay for local agents. Use a webhook only when the runtime has a stable public HTTPS URL.
+
+```bash
+curl -s -X POST $AGENTLINE_URL/v1/webhooks \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id":"agt_xxx","url":"https://yourapp.example/agentline"}'
+```
+
+The full signing secret is returned **once**. Verify deliveries with HMAC-SHA256 of the raw body (default header `X-Webhook-Signature`). `POST /v1/webhooks/test?agent_id=agt_xxx` sends a signed `webhook.test` event.
 
 ---
 
@@ -312,5 +361,5 @@ All REST endpoints above are also available as MCP tools (`create_agent`, `make_
 5. **Use the carrier's country rules** — pass the country that carrier can sell.
 6. **Release numbers only when the human asks** — releasing unrents the number from the carrier and cannot be undone.
 7. **Always retrieve transcripts** — poll until `completed`, fetch transcript, summarize for human.
-8. **Use the events websocket** — poll `GET /v1/events` only when the websocket and webhook are unavailable.
+8. **Use the persistent relay** — inspect and acknowledge its local inbox at conversation start; use webhook or `GET /v1/events` only as fallback.
 9. **Voice changes take effect on next call** — update immediately when asked.

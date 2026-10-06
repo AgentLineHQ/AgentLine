@@ -9,12 +9,15 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Header
 
-from agentline.auth_middleware import get_current_account
+from agentline.auth_middleware import get_current_account, resolve_account
 from agentline.database import get_db, get_db_conn
 from agentline.models.call import CallRequest
 from agentline.providers.registry import get_provider
+from agentline.voice.owner_mode import resolve_outbound_owner_overrides
+from agentline.voice.relay_context import extract_context
+from agentline.voice.relay_store import deliver_turn_context, find_turn_by_push_token
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +71,11 @@ async def create_call(
 
     provider = get_provider(number.get("provider"))
     call_id = f"call_{secrets.token_urlsafe(12)}"
-    system_prompt = body.system_prompt or agent["system_prompt"]
-    initial_greeting = body.initial_greeting  # Per-call override (None = use agent default)
+    system_prompt, initial_greeting, is_owner_call = resolve_outbound_owner_overrides(
+        agent, body.to_number, body.system_prompt, body.initial_greeting,
+    )
+    if is_owner_call:
+        logger.info("Outbound call — OWNER DETECTED (to %s)", body.to_number)
     now = datetime.now(timezone.utc)
 
     await db.execute(
@@ -259,6 +265,98 @@ async def hangup_call(
 
     logger.info("Call %s — agent-initiated hangup", call_id)
     return {"call_id": call_id, "status": "completed", "message": "Call terminated."}
+
+
+@router.post("/{call_id}/context", operation_id="push_call_context")
+async def push_call_context(
+    call_id: str,
+    body: dict,
+    x_push_token: str | None = Header(None, alias="X-Push-Token"),
+    token: str | None = Query(None, description="Push token (alt to X-Push-Token header / body)."),
+    turn_id: str | None = Query(None, description="Turn ID from call.utterance."),
+    authorization: str | None = Header(None),
+    db=Depends(get_db),
+):
+    """
+    Push context into a LIVE relay-mode call (mid-call context injection).
+
+    After a ``call.utterance`` event, POST a concise caller-ready response here.
+    It is spoken verbatim and stored as the assistant turn.
+
+    AUTHENTICATION (one of):
+      1. Push token from the ``call.utterance`` payload via ``X-Push-Token``,
+         ``?token=``, or ``push_token`` in the body.
+      2. Bearer API key for the account that owns the call.
+
+    Body — ``context`` is canonical. Also accepted: ``summary``, ``answer``,
+    ``response``, ``reply``, ``text``, ``result``. Always echo the exact
+    ``turn_id`` from ``call.utterance``.
+    """
+    body_token = body.get("push_token") if isinstance(body, dict) else None
+    push_token = x_push_token or token or body_token
+    turn_id = turn_id or (body.get("turn_id") if isinstance(body, dict) else None)
+    if not turn_id and push_token:
+        turn_id = await find_turn_by_push_token(db, call_id, push_token)
+    if not turn_id:
+        raise HTTPException(
+            400,
+            "turn_id is required. Echo the turn_id from call.utterance. "
+            "Legacy token-only pushes work only while that exact turn is active.",
+        )
+    account_id = None
+    if authorization and authorization.lower().startswith("bearer "):
+        account = await resolve_account(authorization.split(" ", 1)[1].strip(), db)
+        if account is not None:
+            account_id = account["id"]
+    if not push_token and not account_id:
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise HTTPException(
+                401,
+                "Provide X-Push-Token (from the call.utterance event) or "
+                "Authorization: Bearer al_live_... .",
+            )
+        raise HTTPException(401, "Invalid API key or push token.")
+
+    context = extract_context(body)
+    if not context:
+        raise HTTPException(
+            400,
+            'No context found in body. Expected JSON like {"context": "..."}.',
+        )
+
+    status = await deliver_turn_context(
+        db,
+        call_id=call_id,
+        turn_id=turn_id,
+        context=context,
+        push_token=push_token,
+        account_id=account_id,
+    )
+    logger.info(
+        "Context pushed to call %s (%d chars) — status=%s",
+        call_id, len(context), status,
+    )
+    if status == "unauthorized":
+        raise HTTPException(401, "Invalid API key or push token for this turn.")
+    if status == "not_found":
+        raise HTTPException(404, "Call turn not found.")
+    if status == "ended":
+        raise HTTPException(
+            410,
+            "Call has ended. Stop working on this request — no further "
+            "context will be spoken.",
+        )
+    if status == "stale":
+        raise HTTPException(
+            409,
+            "This turn is no longer waiting. Do not reuse its context for another turn.",
+        )
+    return {
+        "delivered": True,
+        "status": status,
+        "call_id": call_id,
+        "turn_id": turn_id,
+    }
 
 
 @router.get("/{call_id}/listen", operation_id="listen_to_call")

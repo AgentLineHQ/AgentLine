@@ -10,9 +10,10 @@ from agentline.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Initialize client — OpenAI-compatible API
+# Initialize client — OpenAI-compatible API.
+# A placeholder keeps import working before the operator sets OPENAI_API_KEY.
 client = openai.AsyncOpenAI(
-    api_key=settings.OPENAI_API_KEY,
+    api_key=settings.OPENAI_API_KEY or "not-set",
     base_url=settings.OPENAI_BASE_URL,
 )
 

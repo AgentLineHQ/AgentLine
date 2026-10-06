@@ -4,6 +4,7 @@
 
 DROP INDEX IF EXISTS idx_billing_ledger_account;
 DROP INDEX IF EXISTS idx_billing_ledger_type;
+DROP INDEX IF EXISTS idx_billing_ledger_unique_ref;
 DROP TABLE IF EXISTS billing_ledger;
 
 ALTER TABLE accounts DROP COLUMN IF EXISTS balance;

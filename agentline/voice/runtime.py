@@ -41,6 +41,10 @@ class CallContext:
     direction: str = ""
     provider_call_id: str = ""
     voice_runtime: str | None = None
+    agent_id: str | None = None
+    account_id: str | None = None
+    voicemail_message: str | None = None
+    relay_mode: bool = False
     extra: dict = field(default_factory=dict)
 
 

@@ -5,6 +5,7 @@ asyncpg>=0.30.0
 deepgram-sdk>=3.2.7,<4
 openai>=1.30.0
 httpx>=0.27.0
+cartesia[websockets]>=3.2.0
 python-jose[cryptography]>=3.3.0
 bcrypt>=4.0.1
 python-multipart>=0.0.9
@@ -13,3 +14,5 @@ email-validator>=2.0.0
 websockets>=12.0
 python-dotenv>=1.0.0
 fastapi-mcp>=0.4.0
+# fastapi-mcp 0.4.x needs mcp v1 Server API.
+mcp>=1.12.0,<2

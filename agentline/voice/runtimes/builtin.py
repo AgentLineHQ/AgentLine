@@ -23,4 +23,9 @@ class BuiltinRuntime:
             voice_id=ctx.voice_id,
             model_tier=ctx.model_tier,
             provider=ctx.media,
+            call_direction=ctx.direction or "inbound",
+            voicemail_message=ctx.voicemail_message,
+            agent_id=ctx.agent_id,
+            account_id=ctx.account_id,
+            relay_mode=ctx.relay_mode,
         )
