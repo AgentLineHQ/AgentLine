@@ -51,28 +51,23 @@ async def init_db():
             """)
             logger.info("call_responses table verified")
 
-            # Auto-create billing infrastructure
-            await conn.execute("""
-                ALTER TABLE accounts
-                    ADD COLUMN IF NOT EXISTS balance NUMERIC(12,4) NOT NULL DEFAULT 10.0000
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS billing_ledger (
-                    id              SERIAL PRIMARY KEY,
-                    account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-                    amount          NUMERIC(12,4) NOT NULL,
-                    balance_after   NUMERIC(12,4) NOT NULL,
-                    txn_type        TEXT NOT NULL,
-                    reference_id    TEXT,
-                    description     TEXT,
-                    created_at      TIMESTAMPTZ DEFAULT now()
-                )
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_billing_ledger_account
-                    ON billing_ledger(account_id, created_at DESC)
-            """)
-            logger.info("billing tables verified")
+            # Open-source installs do not keep a hosted balance or Supabase user id.
+            await conn.execute("DROP INDEX IF EXISTS idx_billing_ledger_account")
+            await conn.execute("DROP INDEX IF EXISTS idx_billing_ledger_type")
+            await conn.execute("DROP TABLE IF EXISTS billing_ledger")
+            await conn.execute("ALTER TABLE accounts DROP COLUMN IF EXISTS balance")
+            await conn.execute("ALTER TABLE accounts DROP COLUMN IF EXISTS supabase_user_id")
+            await conn.execute("DROP INDEX IF EXISTS idx_accounts_supabase")
+            await conn.execute(
+                "ALTER TABLE phone_numbers ADD COLUMN IF NOT EXISTS provider TEXT"
+            )
+            await conn.execute(
+                "ALTER TABLE calls ADD COLUMN IF NOT EXISTS provider TEXT"
+            )
+            await conn.execute(
+                "ALTER TABLE agents ADD COLUMN IF NOT EXISTS voice_runtime TEXT"
+            )
+            logger.info("Open-source schema verified")
 
             # Auto-add initial_greeting column to calls (per-call greeting override)
             await conn.execute("""

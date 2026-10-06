@@ -11,16 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
 from agentline.models.number import NumberProvision, NumberOut
-from agentline.signalwire_client import (
-    provision_number as signalwire_provision_number,
-    release_number as signalwire_release_number,
-    configure_number_webhooks as signalwire_configure_webhooks,
-)
-from agentline.billing import (
-    NUMBER_PROVISION_COST,
-    check_balance,
-    debit_account,
-)
+from agentline.providers.registry import get_telephony
 
 logger = logging.getLogger(__name__)
 
@@ -36,22 +27,19 @@ async def provision(
     db=Depends(get_db),
 ):
     """
-    Buy a US phone number for your AI agent.
+    Buys a phone number from the configured telephony provider and attaches
+    it to the AI agent. The carrier decides which countries and area codes
+    it can sell. You pay that carrier directly.
 
-    Searches for and purchases a real US phone number from the telephony
-    provider, then attaches it to the specified AI agent. Once attached,
-    the agent can make outbound calls and receive inbound calls on this number.
-
-    Each AI agent can only have ONE active phone number. Costs $2.00 per number.
+    Each AI agent can only have ONE active phone number.
 
     Request body:
       - agent_id: str (required) — the AI agent to assign this number to
-      - country: str (must be "US")
+      - country: ISO country code the provider should search
       - number_type: "local" | "tollfree"
-      - area_code: preferred 3-digit US area code (e.g. "212" for NYC, "415" for SF)
+      - area_code: preferred area code, when the provider supports it
     """
-    if body.country.upper() != "US":
-        raise HTTPException(400, "Only US numbers are supported.")
+    provider = get_telephony()
 
     # Verify agent belongs to this account
     agent = await db.fetchrow(
@@ -74,15 +62,8 @@ async def provision(
             "Reassign it first with PATCH /v1/numbers/{number_id}/reassign before provisioning a new one.",
         )
 
-    # Check balance before provisioning ($2.00 per number)
     try:
-        await check_balance(db, account["id"], NUMBER_PROVISION_COST)
-    except ValueError as e:
-        raise HTTPException(402, str(e))
-
-    # Provision via SignalWire (area_code takes priority over pattern)
-    try:
-        number_data = await signalwire_provision_number(
+        number_data = await provider.provision_number(
             country=body.country,
             number_type=body.number_type,
             area_code=body.area_code,
@@ -97,32 +78,32 @@ async def provision(
     try:
         await db.execute(
             """INSERT INTO phone_numbers
-               (id, account_id, agent_id, provider_id, phone_number, country, status)
-               VALUES ($1, $2, $3, $4, $5, $6, 'active')""",
+               (id, account_id, agent_id, provider_id, phone_number, country, status, provider)
+               VALUES ($1, $2, $3, $4, $5, $6, 'active', $7)""",
             number_id,
             account["id"],
             body.agent_id,
-            number_data["provider_id"],
-            number_data["phone_number"],
+            number_data.provider_id,
+            number_data.phone_number,
             body.country,
+            provider.name,
         )
         logger.info(
             "Number %s (%s) saved to DB for agent %s",
-            number_id, number_data["phone_number"], body.agent_id,
+            number_id, number_data.phone_number, body.agent_id,
         )
     except Exception as e:
         logger.error(
             "DB INSERT failed for number %s: %s — number was bought but NOT saved!",
-            number_data["phone_number"], e,
+            number_data.phone_number, e,
         )
-        # Try to release the number we just bought since DB save failed
         try:
-            await signalwire_release_number(number_data["provider_id"])
+            await provider.release_number(number_data.provider_id)
         except Exception:
             pass
         raise HTTPException(
             500,
-            f"Number {number_data['phone_number']} was provisioned on SignalWire but failed to save to database: {e}. "
+            f"Number {number_data.phone_number} was provisioned on {provider.name} but failed to save to the database: {e}. "
             "The number has been released. Please try again.",
         )
 
@@ -132,31 +113,14 @@ async def provision(
         logger.error("Number %s INSERT succeeded but verification SELECT returned nothing!", number_id)
         raise HTTPException(500, "Database write verification failed. Please try again.")
 
-    # Debit $2.00 for the provisioned number
-    new_balance = None
-    try:
-        new_balance = await debit_account(
-            db,
-            account["id"],
-            NUMBER_PROVISION_COST,
-            txn_type="number_provision",
-            reference_id=number_id,
-            description=f"Provisioned number {number_data['phone_number']}",
-        )
-    except ValueError as e:
-        # This shouldn't happen since we checked earlier, but handle gracefully
-        logger.error("Balance debit failed after provisioning %s: %s", number_id, e)
-        # Don't rollback the number — it's provisioned. Just log the billing failure.
-
     return {
         "id": number_id,
         "agent_id": body.agent_id,
-        "phone_number": number_data["phone_number"],
+        "phone_number": number_data.phone_number,
         "country": body.country,
         "number_type": body.number_type,
         "status": "active",
-        "cost": NUMBER_PROVISION_COST,
-        "balance_remaining": new_balance,
+        "provider": provider.name,
     }
 
 
@@ -211,7 +175,7 @@ async def attach_existing_number(
     db=Depends(get_db),
 ):
     """
-    Manually attach a number that was bought directly from SignalWire dashboard.
+    Attach a number that was bought in the carrier's own dashboard.
     Each agent can only have ONE active number.
 
     Query params:
@@ -246,52 +210,31 @@ async def attach_existing_number(
     if existing:
         raise HTTPException(409, f"Number {phone_number} is already attached (id: {existing['id']}).")
 
-    if not phone_number.startswith("+1"):
-        raise HTTPException(400, "Only US numbers (+1) via SignalWire are supported.")
-
-    # ── Billing: check balance before attaching ($2.00 per number) ──
-    try:
-        await check_balance(db, account["id"], NUMBER_PROVISION_COST)
-    except ValueError as e:
-        raise HTTPException(402, str(e))
-
+    provider = get_telephony()
     number_id = f"num_{secrets.token_urlsafe(12)}"
     provider_id = phone_number.lstrip("+")
 
     try:
         await db.execute(
             """INSERT INTO phone_numbers
-               (id, account_id, agent_id, provider_id, phone_number, country, status)
-               VALUES ($1, $2, $3, $4, $5, $6, 'active')""",
+               (id, account_id, agent_id, provider_id, phone_number, country, status, provider)
+               VALUES ($1, $2, $3, $4, $5, $6, 'active', $7)""",
             number_id,
             account["id"],
             agent_id,
             provider_id,
             phone_number,
             "US",
+            provider.name,
         )
         logger.info("Manually attached number %s to agent %s", phone_number, agent_id)
     except Exception as e:
         logger.error("Failed to attach number %s: %s", phone_number, e)
         raise HTTPException(500, f"Failed to save number to database: {e}")
 
-    # ── Billing: debit $2.00 for the attached number ──
-    try:
-        await debit_account(
-            db,
-            account["id"],
-            NUMBER_PROVISION_COST,
-            txn_type="number_provision",
-            reference_id=number_id,
-            description=f"Attached existing number {phone_number}",
-        )
-    except ValueError as e:
-        logger.error("Balance debit failed after attaching %s: %s", number_id, e)
-
-    # Auto-configure webhook URLs on SignalWire
     webhook_status = "manual_config_needed"
     try:
-        await signalwire_configure_webhooks(provider_id)
+        await provider.configure_number(provider_id)
         webhook_status = "auto_configured"
     except Exception as e:
         logger.warning("Could not auto-configure webhooks for %s: %s", phone_number, e)
@@ -301,7 +244,7 @@ async def attach_existing_number(
         "agent_id": agent_id,
         "phone_number": phone_number,
         "status": "active",
-        "cost": NUMBER_PROVISION_COST,
+        "provider": provider.name,
         "webhooks": webhook_status,
     }
 

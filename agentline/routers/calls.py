@@ -14,12 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db, get_db_conn
 from agentline.models.call import CallRequest
-from agentline.signalwire_client import initiate_call as signalwire_initiate_call
-from agentline.signalwire_client import hangup_call as signalwire_hangup_call
-from agentline.billing import check_balance, CALL_RATE_PER_MINUTE
-
-# Minimum balance required to initiate a call (~5 minutes worth)
-MIN_CALL_BALANCE = round(CALL_RATE_PER_MINUTE * 5, 2)  # $0.50
+from agentline.providers.registry import get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -71,25 +66,17 @@ async def create_call(
     if not number:
         raise HTTPException(400, "Agent has no active phone number.")
 
-    # ── Billing: require minimum balance before initiating call ──
-    try:
-        await check_balance(db, account["id"], MIN_CALL_BALANCE)
-    except ValueError as e:
-        raise HTTPException(
-            402,
-            f"Insufficient balance to make a call. Minimum ${MIN_CALL_BALANCE:.2f} required. {e}",
-        )
-
+    provider = get_provider(number.get("provider"))
     call_id = f"call_{secrets.token_urlsafe(12)}"
     system_prompt = body.system_prompt or agent["system_prompt"]
     initial_greeting = body.initial_greeting  # Per-call override (None = use agent default)
     now = datetime.now(timezone.utc)
 
     await db.execute(
-        """INSERT INTO calls (id, account_id, agent_id, number_id, direction,
+        """INSERT INTO calls (id, account_id, agent_id, number_id, provider, direction,
            from_number, to_number, system_prompt, initial_greeting, voice_id, status, started_at)
-           VALUES ($1,$2,$3,$4,'outbound',$5,$6,$7,$8,$9,'initiated',$10)""",
-        call_id, account["id"], body.agent_id, number["id"],
+           VALUES ($1,$2,$3,$4,$5,'outbound',$6,$7,$8,$9,$10,'initiated',$11)""",
+        call_id, account["id"], body.agent_id, number["id"], provider.name,
         number["phone_number"], body.to_number, system_prompt,
         initial_greeting,
         body.voice_id,  # Per-call voice override (None = use agent/account default)
@@ -97,7 +84,7 @@ async def create_call(
     )
 
     try:
-        provider_call_id = await signalwire_initiate_call(
+        provider_call_id = await provider.initiate_call(
             from_number=number["phone_number"],
             to_number=body.to_number,
             call_id=call_id,
@@ -238,8 +225,8 @@ async def hangup_call(
 
     Programmatically terminates an in-progress voice call. Use this
     when the AI agent needs to end the conversation, or to force-stop
-    a call that is no longer needed. The call's final transcript and
-    billing are processed automatically after hangup.
+    a call that is no longer needed. The call's final transcript is
+    stored when the carrier reports the hangup.
     """
     call = await db.fetchrow(
         "SELECT * FROM calls WHERE id=$1 AND account_id=$2",
@@ -260,7 +247,7 @@ async def hangup_call(
         return {"call_id": call_id, "status": "completed", "message": "Call was never connected, marked as completed."}
 
     try:
-        await signalwire_hangup_call(provider_call_id)
+        await get_provider(call.get("provider")).hangup_call(provider_call_id)
     except Exception as e:
         logger.warning("Provider hangup failed for call %s: %s (marking completed anyway)", call_id, e)
 

@@ -13,6 +13,7 @@ class AgentCreate(BaseModel):
     initial_greeting: str | None = Field(default=None, description="What the AI agent says when a call connects (e.g. 'Hello, how can I help you today?')")
     voice_id: str | None = Field(default=None, description="TTS voice preset name (e.g. 'female-1', 'male-1') or Cartesia voice UUID; defaults to system voice if not set")
     model_tier: Literal["turbo", "balanced", "max"] = Field(default="balanced", description="LLM model tier: 'turbo' (fastest, GPT-4o-mini), 'balanced' (default), or 'max' (highest quality, GPT-4o)")
+    voice_runtime: str | None = Field(default=None, description="Voice stack for this agent: 'builtin', 'livekit', 'pipecat', or a module:Class path. Empty uses VOICE_RUNTIME.")
     transfer_number: str | None = Field(default=None, description="Phone number in E.164 format to transfer calls to (e.g. a human operator fallback)")
     voicemail_message: str | None = Field(default=None, description="Message the AI agent leaves if the call goes to voicemail")
 
@@ -23,6 +24,7 @@ class AgentUpdate(BaseModel):
     initial_greeting: str | None = Field(default=None, description="Updated greeting message spoken when calls connect")
     voice_id: str | None = Field(default=None, description="New TTS voice preset name or Cartesia voice UUID")
     model_tier: Literal["turbo", "balanced", "max"] | None = Field(default=None, description="Updated LLM model tier: 'turbo', 'balanced', or 'max'")
+    voice_runtime: str | None = Field(default=None, description="Voice stack for this agent: 'builtin', 'livekit', 'pipecat', or a module:Class path")
     transfer_number: str | None = Field(default=None, description="Updated transfer phone number in E.164 format")
     voicemail_message: str | None = Field(default=None, description="Updated voicemail message")
 
@@ -35,6 +37,7 @@ class AgentOut(BaseModel):
     initial_greeting: str | None = Field(default=None, description="Greeting spoken when a call connects")
     voice_id: str | None = Field(default=None, description="TTS voice preset or Cartesia UUID")
     model_tier: str = Field(description="LLM model tier: turbo, balanced, or max")
+    voice_runtime: str | None = Field(default=None, description="Voice stack override for this agent")
     transfer_number: str | None = Field(default=None, description="Phone number for call transfers")
     voicemail_message: str | None = Field(default=None, description="Message left on voicemail")
     created_at: datetime = Field(description="When the agent was created")

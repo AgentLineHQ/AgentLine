@@ -103,6 +103,18 @@ def _extract_sentence(text: str) -> tuple[str, str]:
     return "", text
 
 
+class OpenAILLM:
+    """OpenAI-compatible chat model. Selected when ``LLM_PROVIDER=openai``.
+
+    ``OPENAI_BASE_URL`` points this at any compatible server.
+    """
+
+    name = "openai"
+
+    def stream(self, system_prompt: str, conversation_history: list[dict], model_tier: str = "balanced"):
+        return llm_response_stream(system_prompt, conversation_history, model_tier)
+
+
 async def llm_response_stream(
     system_prompt: str,
     conversation_history: list[dict],

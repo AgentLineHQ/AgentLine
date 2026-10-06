@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
 from agentline.models.message import MessageSend, MessageOut
-from agentline.signalwire_client import send_sms as signalwire_send_sms
+from agentline.providers.registry import get_provider
 
 router = APIRouter(prefix="/v1/messages", tags=["Messages"])
 
@@ -76,7 +76,7 @@ async def send_message(
         )
 
     try:
-        result = await signalwire_send_sms(
+        result = await get_provider(number.get("provider")).send_sms(
             from_number=number["phone_number"],
             to_number=body.to_number,
             body=body.body,
@@ -98,12 +98,12 @@ async def send_message(
         body.agent_id,
         number["id"],
         conv_id,
-        result.get("provider_message_id"),
+        result.provider_message_id,
         number["phone_number"],
         body.to_number,
         body.body,
         body.media_url,
-        result.get("status", "sent"),
+        result.status or "sent",
         now,
     )
 

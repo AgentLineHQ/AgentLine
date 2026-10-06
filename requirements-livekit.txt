@@ -1,0 +1,5 @@
+# Optional. Install when VOICE_RUNTIME=livekit and you bridge carrier
+# audio into a LiveKit room from this process.
+# SIP mode (LIVEKIT_SIP_URI) does not need this file.
+-r requirements.txt
+livekit>=1.0.0

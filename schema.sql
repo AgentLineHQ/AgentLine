@@ -6,9 +6,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE accounts (
     id               TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     human_email      TEXT UNIQUE NOT NULL,
-    supabase_user_id TEXT UNIQUE,   -- Links to Supabase Auth user
-    balance          NUMERIC(12,4) NOT NULL DEFAULT 10.0000,  -- USD balance, starts with $10
-    default_voice_id TEXT,          -- Account-level default Cartesia voice UUID
+    default_voice_id TEXT,          -- Account-level default voice id for the active TTS hook
     created_at       TIMESTAMPTZ DEFAULT now()
 );
 
@@ -28,7 +26,8 @@ CREATE TABLE agents (
     voice_mode       TEXT DEFAULT 'hosted',
     system_prompt    TEXT,
     initial_greeting TEXT,
-    voice_id         TEXT,          -- Cartesia UUID, preset name, or NULL (resolves to system default)
+    voice_id         TEXT,          -- Voice id understood by the active TTS hook
+    voice_runtime    TEXT,          -- builtin, livekit, pipecat, or module:Class. NULL uses VOICE_RUNTIME
     model_tier       TEXT DEFAULT 'balanced',
     transfer_number  TEXT,
     voicemail_message TEXT,
@@ -39,7 +38,8 @@ CREATE TABLE phone_numbers (
     id             TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     account_id     TEXT REFERENCES accounts(id) ON DELETE CASCADE,
     agent_id       TEXT REFERENCES agents(id),
-    provider_id    TEXT UNIQUE NOT NULL,  -- Plivo uses raw number as ID
+    provider_id    TEXT UNIQUE NOT NULL,  -- Carrier id for this number
+    provider       TEXT,              -- signalwire, twilio, plivo, telnyx, or a custom name
     phone_number   TEXT UNIQUE NOT NULL,
     country        TEXT DEFAULT 'IN',
     status         TEXT DEFAULT 'active',
@@ -57,7 +57,8 @@ CREATE TABLE calls (
     account_id        TEXT REFERENCES accounts(id),
     agent_id          TEXT REFERENCES agents(id),
     number_id         TEXT REFERENCES phone_numbers(id),
-    provider_call_id  TEXT,  -- Was telnyx_call_id, now generic
+    provider          TEXT,  -- Carrier that owns this call
+    provider_call_id  TEXT,
     direction         TEXT NOT NULL,
     from_number       TEXT NOT NULL,
     to_number         TEXT NOT NULL,
@@ -130,19 +131,6 @@ CREATE TABLE IF NOT EXISTS event_mailbox (
     created_at  TIMESTAMPTZ DEFAULT now()
 );
 
--- Billing ledger: every debit/credit is an immutable row
-CREATE TABLE IF NOT EXISTS billing_ledger (
-    id              SERIAL PRIMARY KEY,
-    account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    amount          NUMERIC(12,4) NOT NULL,   -- negative = debit, positive = credit
-    balance_after   NUMERIC(12,4) NOT NULL,   -- snapshot of balance after this txn
-    txn_type        TEXT NOT NULL,             -- 'call_charge', 'number_provision', 'topup', 'refund'
-    reference_id    TEXT,                      -- call_id, number_id, or payment_id
-    description     TEXT,
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
-
-
 -- Performance indexes
 CREATE INDEX idx_api_keys_prefix ON api_keys(key_prefix) WHERE revoked_at IS NULL;
 CREATE INDEX idx_agents_account ON agents(account_id);
@@ -155,9 +143,6 @@ CREATE INDEX idx_messages_conversation ON messages(conversation_id, created_at D
 CREATE INDEX idx_conversations_number_contact ON conversations(number_id, contact_number);
 CREATE INDEX idx_webhooks_agent ON webhooks(agent_id);
 CREATE INDEX idx_webhooks_account ON webhooks(account_id) WHERE agent_id IS NULL;
-CREATE INDEX idx_accounts_supabase ON accounts(supabase_user_id) WHERE supabase_user_id IS NOT NULL;
 CREATE INDEX idx_event_mailbox_account ON event_mailbox(account_id, created_at ASC);
 CREATE INDEX idx_event_mailbox_agent ON event_mailbox(account_id, agent_id, created_at ASC);
 CREATE INDEX idx_event_mailbox_expiry ON event_mailbox(account_id, created_at);
-CREATE INDEX idx_billing_ledger_account ON billing_ledger(account_id, created_at DESC);
-CREATE INDEX idx_billing_ledger_type ON billing_ledger(account_id, txn_type);

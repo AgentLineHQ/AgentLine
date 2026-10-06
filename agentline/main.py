@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agentline.database import init_db, close_db
 from agentline.redis_client import init_redis, close_redis
-from agentline.routers import agents, numbers, messages, calls, usage, events, signalwire_events, billing_api, voice_settings
+from agentline.routers import agents, numbers, messages, calls, events, voice_settings
+from agentline.routers.webhooks import all_webhook_routers, webhook_operation_ids
 
 # Configure logging
 logging.basicConfig(
@@ -29,7 +30,6 @@ async def lifespan(app: FastAPI):
     await init_db()
     await init_redis()
 
-    # Reconfigure existing numbers with correct StatusCallback for billing
     try:
         await _reconfigure_number_callbacks()
     except Exception as e:
@@ -44,50 +44,14 @@ async def lifespan(app: FastAPI):
 
 
 async def _reconfigure_number_callbacks():
-    """
-    Ensure all active SignalWire numbers have the correct StatusCallback URL
-    so inbound call hangups are properly received and billed.
-    Runs once on startup — safe to call repeatedly (idempotent).
-    """
-    import httpx
-    from agentline.config import settings
-    from agentline.database import get_db_conn
+    """Point active numbers at this server's webhook URLs for their carrier."""
+    from agentline.providers.registry import get_telephony
 
-    if not all([settings.SIGNALWIRE_PROJECT_ID, settings.SIGNALWIRE_TOKEN, settings.SIGNALWIRE_SPACE_URL]):
-        logger.info("Skipping number callback reconfiguration — SignalWire not configured.")
+    provider = get_telephony()
+    if not provider.is_configured():
+        logger.info("Skipping number webhook refresh — %s is not configured.", provider.name)
         return
-
-    sw_base = f"https://{settings.SIGNALWIRE_SPACE_URL}/api/laml/2010-04-01/Accounts/{settings.SIGNALWIRE_PROJECT_ID}"
-    auth = (settings.SIGNALWIRE_PROJECT_ID, settings.SIGNALWIRE_TOKEN)
-    base = settings.base_url_clean
-
-    async with get_db_conn() as db:
-        rows = await db.fetch(
-            "SELECT id, phone_number, provider_id FROM phone_numbers WHERE status = 'active'"
-        )
-
-    if not rows:
-        return
-
-    logger.info("Reconfiguring StatusCallback on %d active number(s)...", len(rows))
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        for r in rows:
-            try:
-                await client.post(
-                    f"{sw_base}/IncomingPhoneNumbers/{r['provider_id']}.json",
-                    auth=auth,
-                    data={
-                        "VoiceUrl": f"{base}/signalwire/inbound",
-                        "VoiceMethod": "POST",
-                        "SmsUrl": f"{base}/signalwire/sms",
-                        "SmsMethod": "POST",
-                        "StatusCallback": f"{base}/signalwire/inbound_hangup",
-                        "StatusCallbackMethod": "POST",
-                    },
-                )
-                logger.info("  ✓ %s — StatusCallback updated", r["phone_number"])
-            except Exception as e:
-                logger.warning("  ✗ %s — failed: %s", r["phone_number"], e)
+    await provider.reconfigure_active_numbers()
 
 
 app = FastAPI(
@@ -98,7 +62,7 @@ app = FastAPI(
         "Build AI phone agents, automated outbound calling systems, AI receptionists, "
         "and conversational voice AI assistants over real phone lines."
     ),
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -117,18 +81,17 @@ app.include_router(agents.router)
 app.include_router(numbers.router)
 app.include_router(messages.router)
 app.include_router(calls.router)
-app.include_router(usage.router)
 app.include_router(events.router)
-app.include_router(signalwire_events.router)
-app.include_router(billing_api.router)
 app.include_router(voice_settings.router)
+for _webhook_router in all_webhook_routers():
+    app.include_router(_webhook_router)
 
 
 @app.get("/", tags=["Health"], operation_id="health_check")
 async def root():
     return {
         "service": "AgentLine",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "status": "operational",
         "mcp_endpoint": "/mcp",
     }
@@ -149,25 +112,39 @@ async def health():
 
 @app.get("/debug/urls", tags=["Health"], operation_id="debug_callback_urls")
 async def debug_urls():
-    """Show the callback URLs that providers will receive — useful for debugging."""
+    """Show the callback URLs carriers should call, and which hooks are active."""
     from agentline.config import settings
+    from agentline.providers.base import public_http_url, public_ws_url
+    from agentline.providers.registry import get_telephony, registered_telephony
+    from agentline.voice.hooks import registered_llm, registered_stt, registered_tts
+    from agentline.voice.runtime import registered_runtimes
+
+    provider = get_telephony()
     base = settings.base_url_clean
-    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
+    name = provider.name
     return {
         "base_url_raw": settings.BASE_URL,
         "base_url_clean": base,
-        "signalwire": {
-            "answer_url": f"{base}/signalwire/answer/call_TEST",
-            "stream_ws_url": f"{ws_base}/signalwire/stream/call_TEST",
-            "hangup_url": f"{base}/signalwire/hangup/call_TEST",
-            "inbound_url": f"{base}/signalwire/inbound",
-            "inbound_hangup_url": f"{base}/signalwire/inbound_hangup",
-            "sms_url": f"{base}/signalwire/sms",
+        "telephony": {
+            "active": name,
+            "configured": provider.is_configured(),
+            "available": registered_telephony(),
+            "answer_url": public_http_url(f"/{name}/answer/call_TEST"),
+            "stream_ws_url": public_ws_url(f"/{name}/stream/call_TEST"),
+            "hangup_url": public_http_url(f"/{name}/hangup/call_TEST"),
+            "inbound_url": public_http_url(f"/{name}/inbound"),
+            "inbound_hangup_url": public_http_url(f"/{name}/inbound_hangup"),
+            "sms_url": public_http_url(f"/{name}/sms"),
         },
-        "voice_pipeline": {
-            "stt": "Deepgram Nova-2 ($0.006/min)",
-            "tts": "Cartesia Sonic ($0.002/min)",
-            "llm": "GPT-4o-mini / GPT-4o",
+        "voice": {
+            "runtime": settings.VOICE_RUNTIME,
+            "available_runtimes": registered_runtimes(),
+            "stt": settings.STT_PROVIDER,
+            "available_stt": registered_stt(),
+            "tts": settings.TTS_PROVIDER,
+            "available_tts": registered_tts(),
+            "llm": settings.LLM_PROVIDER,
+            "available_llm": registered_llm(),
         },
     }
 
@@ -191,45 +168,32 @@ mcp = FastApiMCP(
         "Capabilities: buy and manage US phone numbers, create and configure "
         "voice AI agents with custom system prompts, initiate outbound voice "
         "calls, handle inbound calls automatically, retrieve call transcripts, "
-        "manage billing and usage, set voice preferences (TTS), and poll for "
+        "choose a telephony provider and a voice runtime (built-in, LiveKit, "
+        "or Pipecat), set voice preferences, and poll for "
         "real-time call events. "
         "Use cases: AI phone agents, automated outbound calling, AI receptionist, "
         "voice AI assistants, phone-based customer support bots, "
         "conversational AI over the phone, and programmable telephony for LLMs. "
-        "Requires Authorization: Bearer sk_live_xxx header."
+        "Requires Authorization: Bearer al_live_xxx header (legacy sk_live_ keys also accepted)."
     ),
     describe_full_response_schema=True,
     describe_all_responses=True,
     # Exclude internal webhooks, health/debug endpoints, and tools
     # not documented in the public skill (SKILL.md).
     exclude_operations=[
-        # ── Internal provider webhooks ──
-        "signalwire_answer",
-        "signalwire_stream",
-        "signalwire_hangup",
-        "signalwire_inbound_call",
-        "signalwire_inbound_hangup",
-        "signalwire_sms_callback",
-        # ── Health / debug ──
+        # Carrier webhooks are not agent tools.
+        *webhook_operation_ids(),
+        # Health / debug
         "health_check",
         "health_status",
         "debug_callback_urls",
-        # ── SMS: sending is not enabled ──
+        # SMS sending stays off the public tool list.
         "send_sms",
         "list_conversations",
-        # ── Relay-mode call tools (hosted mode only) ──
+        # Relay-mode call tools.
         "speak_on_call",
         "listen_to_call",
-        # ── Billing: only balance + expenditure exposed ──
-        "get_usage_stats",
-        "get_usage_balance",
-        "get_billing_transactions",
-        "get_spending_summary",
-        "get_call_charges",
-        "get_number_charges",
-        "verify_call_billing",
-        # ── Admin / internal tools ──
-        "topup_balance",
+        # Admin / internal tools
         "attach_existing_number",
         "reassign_number",
         "get_phone_number",
@@ -240,15 +204,15 @@ mcp = FastApiMCP(
 # FastApiMCP only sets name + description on the underlying Server.
 # We patch in version, instructions, and website_url for full metadata.
 try:
-    mcp.server.version = "0.2.0"
+    mcp.server.version = "0.3.0"
     mcp.server.instructions = (
         "AgentLine gives AI agents real phone numbers and human-like voices. "
         "Start by creating an agent (create_agent), then buy a phone number "
         "(buy_phone_number) to attach to it. The agent can then make outbound "
         "calls (make_outbound_call) and receive inbound calls automatically. "
         "Poll for events (poll_events) to get call completion notifications "
-        "and transcripts. Check your balance (get_account_balance) before "
-        "making calls or buying numbers."
+        "and transcripts. Telephony provider and voice runtime are chosen "
+        "by the server operator."
     )
     mcp.server.website_url = "https://agentline.ai"
 except Exception as e:
@@ -321,15 +285,6 @@ _TOOL_ANNOTATIONS = {
     ),
     "peek_events": mcp_types.ToolAnnotations(
         title="Peek at Pending Events",
-        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
-    ),
-    # Billing
-    "get_account_balance": mcp_types.ToolAnnotations(
-        title="Get Account Balance",
-        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
-    ),
-    "get_expenditure_breakdown": mcp_types.ToolAnnotations(
-        title="Get Expenditure Breakdown",
         readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
     ),
     # Voice

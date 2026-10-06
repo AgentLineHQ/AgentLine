@@ -1,23 +1,12 @@
 """
-AgentLine — Voice Pipeline (Provider-Agnostic)
-Orchestrates the full voice loop: Provider audio → Deepgram STT → LLM → Cartesia TTS → Provider audio.
+AgentLine — Built-in voice pipeline.
 
-Supports both SignalWire <Connect><Stream> and Plivo bidirectional WebSocket.
+Carrier audio → STT hook → LLM hook → TTS hook → carrier audio.
 
-Architecture:
-  Provider WS (raw mulaw audio in)
-      ↓
-  Deepgram (streaming STT)
-      ↓ [on utterance end]
-  LLM (generate response)
-      ↓
-  Cartesia (TTS → raw mulaw)
-      ↓
-  Provider WS (audio back to caller)
-
-Cost savings vs SignalWire <Gather>+<Say>:
-  SignalWire STT: $0.0675/min  → Deepgram: $0.006/min  (~90% cheaper)
-  SignalWire TTS: $0.003/min   → Cartesia: ~$0.002/min  (comparable)
+The default hooks are Deepgram, an OpenAI-compatible chat model, and
+Cartesia. Swap any of them with ``register_stt``, ``register_llm``, and
+``register_tts``. Carrier framing is selected with ``provider``
+(``signalwire``, ``twilio``, ``telnyx``, or ``plivo``).
 """
 
 import asyncio
@@ -26,14 +15,10 @@ import base64
 import logging
 from datetime import datetime, timezone
 
-from deepgram import LiveTranscriptionEvents
-
-from agentline.config import settings
 from agentline.database import get_db_conn
-from agentline.voice.stt import create_deepgram_connection, get_stt_options
-from agentline.voice.llm import llm_response_stream
-from agentline.voice.tts import tts_cartesia
-from agentline.voice.voices import resolve_voice_id, DEFAULT_VOICE_ID
+from agentline.voice.hooks import get_llm, get_stt, get_tts
+from agentline.voice.media import sender_for
+from agentline.voice.voices import resolve_voice_id
 
 logger = logging.getLogger(__name__)
 
@@ -61,40 +46,7 @@ def _is_only_filler(text: str) -> bool:
     return len(words) > 0 and all(w in FILLER_WORDS for w in words)
 
 
-# ── Provider-specific audio send helpers ──────────────────────────
 
-async def _send_audio_signalwire(ws, audio_bytes: bytes, stream_sid: str):
-    """Send audio back to caller via SignalWire <Connect><Stream> WebSocket."""
-    if not audio_bytes:
-        return
-    payload = base64.b64encode(audio_bytes).decode("ascii")
-    msg = {
-        "event": "media",
-        "streamSid": stream_sid,
-        "media": {
-            "payload": payload,
-        },
-    }
-    await ws.send_json(msg)
-    logger.debug("Sent %d bytes audio to SignalWire (streamSid: %s)", len(audio_bytes), stream_sid[:8])
-
-
-async def _send_audio_plivo(ws, audio_bytes: bytes, _stream_sid: str = ""):
-    """Send audio back to caller via Plivo bidirectional WebSocket."""
-    if not audio_bytes:
-        return
-    payload = base64.b64encode(audio_bytes).decode("ascii")
-    await ws.send_json({
-        "event": "playAudio",
-        "media": {"payload": payload, "contentType": "audio/x-mulaw;rate=8000"},
-    })
-
-
-# Provider send function registry
-PROVIDER_SEND = {
-    "signalwire": _send_audio_signalwire,
-    "plivo": _send_audio_plivo,
-}
 
 
 async def run_pipeline(
@@ -108,19 +60,21 @@ async def run_pipeline(
 ):
     """
     Main voice pipeline coroutine. One instance per active call.
-    Bridges Provider audio ↔ Deepgram STT ↔ LLM ↔ Cartesia TTS.
+    Bridges carrier audio with the configured STT, LLM, and TTS hooks.
 
     Args:
         provider_ws: WebSocket connection to the telephony provider
         call_id: Internal call ID
         system_prompt: System prompt for the LLM
         initial_greeting: Optional greeting to speak when call starts
-        voice_id: Cartesia voice ID (UUID or preset name — resolved before use)
+        voice_id: Voice id understood by the active TTS hook
         model_tier: LLM model tier (turbo/balanced/max)
-        provider: 'signalwire' or 'plivo'
+        provider: Media framing name (signalwire, twilio, telnyx, plivo)
     """
     voice_id = resolve_voice_id(voice_id)
-    send_audio = PROVIDER_SEND.get(provider, _send_audio_signalwire)
+    send_audio = sender_for(provider)
+    synthesizer = get_tts()
+    language_model = get_llm()
 
     conversation_history: list[dict] = []
     transcript_turns: list[dict] = []
@@ -128,8 +82,6 @@ async def run_pipeline(
     greeting_sent = False
     pending_response_task: asyncio.Task | None = None  # debounce handle
 
-    # Set up Deepgram streaming STT
-    dg_connection = create_deepgram_connection()
     utterance_buffer: list[str] = []
 
     # ── Speculative execution helpers ─────────────────────────────
@@ -144,11 +96,11 @@ async def run_pipeline(
         into the queue when generation finishes (or on error).
         """
         try:
-            async for sentence in llm_response_stream(
+            async for sentence in language_model.stream(
                 system_prompt, conversation_history, model_tier
             ):
                 try:
-                    audio = await tts_cartesia(sentence, voice_id)
+                    audio = await synthesizer.synthesize(sentence, voice_id)
                     await audio_queue.put((audio, sentence))
                 except Exception as e:
                     logger.error("Call %s — TTS failed during speculative gen: %s", call_id, e)
@@ -260,15 +212,10 @@ async def run_pipeline(
         finally:
             pending_response_task = None
 
-    # This event fires for each transcript segment
-    async def on_transcript(self, result, **kwargs):
+    # Fired by the STT hook for each finalized transcript segment.
+    async def on_transcript(sentence: str, speech_final: bool):
         nonlocal pending_response_task
 
-        # We only care about finalized transcript segments
-        if not result.is_final:
-            return
-
-        sentence = result.channel.alternatives[0].transcript
         if sentence:
             # New speech arrived — cancel any pending response (user is still talking)
             if pending_response_task and not pending_response_task.done():
@@ -276,7 +223,7 @@ async def run_pipeline(
                 pending_response_task = None
             utterance_buffer.append(sentence)
 
-        if result.speech_final:
+        if speech_final:
             full_utterance = " ".join(utterance_buffer).strip()
             utterance_buffer.clear()
 
@@ -296,22 +243,9 @@ async def run_pipeline(
                 _schedule_response(full_utterance)
             )
 
-    # ── Deepgram lifecycle event handlers ──
-    dg_ready = asyncio.Event()
-
-    async def on_dg_open(self, open_response, **kwargs):
-        logger.info("Call %s — Deepgram WebSocket OPEN (connection ready)", call_id)
-        dg_ready.set()
-
-    async def on_dg_error(self, error, **kwargs):
-        logger.error("Call %s — Deepgram ERROR: %s", call_id, error)
-
-    async def on_dg_close(self, *args, **kwargs):
-        logger.info("Call %s — Deepgram WebSocket CLOSED", call_id)
-
-    async def on_utterance_end(self, utterance_end, **kwargs):
+    async def on_utterance_end():
         nonlocal pending_response_task
-        logger.info("Call %s — Deepgram UtteranceEnd event (buffer: %s)", call_id, utterance_buffer)
+        logger.info("Call %s — STT utterance end (buffer: %s)", call_id, utterance_buffer)
         # Fallback: if we have buffered text but speech_final never fired, flush now
         if utterance_buffer:
             full_utterance = " ".join(utterance_buffer).strip()
@@ -328,14 +262,12 @@ async def run_pipeline(
             elif full_utterance:
                 logger.info("Call %s — skipping filler-only UtteranceEnd: '%s'", call_id, full_utterance)
 
-    dg_connection.on(LiveTranscriptionEvents.Open, on_dg_open)
-    dg_connection.on(LiveTranscriptionEvents.Error, on_dg_error)
-    dg_connection.on(LiveTranscriptionEvents.Close, on_dg_close)
-    dg_connection.on(LiveTranscriptionEvents.UtteranceEnd, on_utterance_end)
-    dg_connection.on(LiveTranscriptionEvents.Transcript, on_transcript)
-    options = get_stt_options()
-    result = await dg_connection.start(options)
-    logger.info("Deepgram STT start() returned for call %s: %s", call_id, result)
+    stt_provider = get_stt()
+    stt = stt_provider.open()
+    stt.on_transcript(on_transcript)
+    stt.on_utterance_end(on_utterance_end)
+    await stt.start()
+    logger.info("STT started for call %s (%s)", call_id, getattr(stt_provider, "name", "custom"))
 
     media_frame_count = 0
 
@@ -351,15 +283,15 @@ async def run_pipeline(
                 if audio_payload:
                     audio_bytes = base64.b64decode(audio_payload)
                     try:
-                        await dg_connection.send(audio_bytes)
+                        await stt.send(audio_bytes)
                         media_frame_count += 1
                         if media_frame_count in (1, 10, 50, 100):
                             logger.info(
-                                "Call %s — forwarded %d media frames to Deepgram (%d bytes this frame)",
+                                "Call %s — forwarded %d media frames to STT (%d bytes this frame)",
                                 call_id, media_frame_count, len(audio_bytes),
                             )
                     except Exception as e:
-                        logger.error("Call %s — failed to send audio to Deepgram: %s", call_id, e)
+                        logger.error("Call %s — failed to send audio to STT: %s", call_id, e)
 
             elif event == "connected":
                 # SignalWire sends 'connected' first — just the WebSocket handshake
@@ -381,7 +313,7 @@ async def run_pipeline(
                 if initial_greeting and not greeting_sent:
                     try:
                         logger.info("Sending greeting for call %s with voice %s", call_id, voice_id)
-                        audio = await tts_cartesia(initial_greeting, voice_id)
+                        audio = await synthesizer.synthesize(initial_greeting, voice_id)
                         await send_audio(provider_ws, audio, stream_sid)
                         transcript_turns.append({
                             "role": "agent",
@@ -406,9 +338,9 @@ async def run_pipeline(
         logger.info("WebSocket closed for call %s: %s (received %d media frames)", call_id, e, media_frame_count)
     finally:
         try:
-            await dg_connection.finish()
+            await stt.finish()
         except Exception as e:
-            logger.debug("Deepgram finish error (expected on disconnect): %s", e)
+            logger.debug("STT finish error (expected on disconnect): %s", e)
 
         # Save final transcript to DB
         try:

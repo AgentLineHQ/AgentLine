@@ -1,45 +1,81 @@
 """
 AgentLine — Configuration
-Loads environment variables with validation via pydantic-settings.
-Database URL is derived from SUPABASE_URL automatically.
+
+Loads environment variables with pydantic-settings. Telephony, speech,
+and voice-runtime choices are all optional switches. Bring the accounts
+you want; this process does not talk to Supabase or a hosted billing ledger.
 """
 
-from pydantic_settings import BaseSettings
-from pydantic import computed_field
 from functools import lru_cache
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Supabase (Auth + Database)
-    SUPABASE_URL: str = ""
-    SUPABASE_ANON_KEY: str = ""
-    SUPABASE_SERVICE_ROLE_KEY: str = ""
+    # PostgreSQL. Docker Compose supplies a local default.
+    DATABASE_URL: str = ""
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # SignalWire Configuration
+    # Which carrier places calls and buys numbers.
+    # signalwire | twilio | plivo | telnyx | module:Class
+    TELEPHONY_PROVIDER: str = "signalwire"
+
+    # Which voice stack handles the conversation.
+    # builtin | livekit | pipecat | module:Class
+    VOICE_RUNTIME: str = "builtin"
+
+    # Built-in pipeline vendors. Ignored when VOICE_RUNTIME is livekit or pipecat,
+    # unless that runtime calls back into these hooks.
+    STT_PROVIDER: str = "deepgram"
+    TTS_PROVIDER: str = "cartesia"
+    LLM_PROVIDER: str = "openai"
+
+    # SignalWire
     SIGNALWIRE_PROJECT_ID: str = ""
     SIGNALWIRE_TOKEN: str = ""
     SIGNALWIRE_SPACE_URL: str = ""
 
-    # Voice Pipeline — LLM
-    OPENAI_API_KEY: str = ""
-    OPENAI_BASE_URL: str = "https://api.openai.com/v1"  # Default to OpenAI, or set to Inception Labs
+    # Twilio
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
 
-    # Voice Pipeline — STT (Deepgram)
+    # Plivo
+    PLIVO_AUTH_ID: str = ""
+    PLIVO_AUTH_TOKEN: str = ""
+    PLIVO_APP_ID: str = ""
+
+    # Telnyx. TELNYX_ACCOUNT_SID is the TeXML application id.
+    # TELNYX_CONNECTION_ID attaches purchased numbers to that application.
+    TELNYX_API_KEY: str = ""
+    TELNYX_ACCOUNT_SID: str = ""
+    TELNYX_CONNECTION_ID: str = ""
+
+    # Voice pipeline — LLM (OpenAI-compatible)
+    OPENAI_API_KEY: str = ""
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+
+    # Voice pipeline — STT
     DEEPGRAM_API_KEY: str = ""
 
-    # Voice Pipeline — TTS (Cartesia)
+    # Voice pipeline — TTS
     CARTESIA_API_KEY: str = ""
+
+    # LiveKit. Install requirements-livekit.txt when bridging audio in-process.
+    LIVEKIT_URL: str = ""
+    LIVEKIT_API_KEY: str = ""
+    LIVEKIT_API_SECRET: str = ""
+    LIVEKIT_AGENT_NAME: str = "agentline"
+    LIVEKIT_SIP_URI: str = ""
+
+    # Pipecat. module:function that replaces the default bot.
+    PIPECAT_FACTORY: str = ""
 
     # App
     SECRET_KEY: str = "change-me-in-production"
     BASE_URL: str = "http://localhost:8000"
     WEBHOOK_SECRET_SALT: str = "change-me-in-production"
-
-    # Database — override if needed, otherwise derived from Supabase URL
-    DATABASE_URL: str = ""
 
     @property
     def base_url_clean(self) -> str:
@@ -50,7 +86,6 @@ class Settings(BaseSettings):
     def db_dsn(self) -> str:
         """Returns asyncpg-compatible DSN from DATABASE_URL."""
         if self.DATABASE_URL:
-            # asyncpg requires postgresql:// instead of postgres://
             url = self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
             url = url.replace("postgres://", "postgresql://")
             return url

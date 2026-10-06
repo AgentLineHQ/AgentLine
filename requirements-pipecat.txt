@@ -1,0 +1,4 @@
+# Optional. Install when VOICE_RUNTIME=pipecat and you use the default bot.
+# A custom PIPECAT_FACTORY can depend on whatever Pipecat extras that bot needs.
+-r requirements.txt
+pipecat-ai[websocket,silero,deepgram,cartesia,openai]>=0.0.90

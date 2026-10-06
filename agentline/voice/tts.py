@@ -40,6 +40,15 @@ def _get_client() -> httpx.AsyncClient:
     return _http_client
 
 
+class CartesiaTTS:
+    """Mulaw TTS. Selected when ``TTS_PROVIDER=cartesia``."""
+
+    name = "cartesia"
+
+    async def synthesize(self, text: str, voice_id: str) -> bytes:
+        return await tts_cartesia(text, voice_id)
+
+
 async def tts_cartesia(text: str, voice_id: str) -> bytes:
     """
     Convert text to mulaw 8kHz audio via Cartesia API.

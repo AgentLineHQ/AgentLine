@@ -1,6 +1,6 @@
 ---
 name: agentline
-description: Make phone calls, view received SMS, provision numbers, manage agents, and track billing through the AgentLine telephony API (REST or MCP). Use when the user asks to call someone, check transcripts, view text messages, manage phone agents, buy numbers, or check account balance. For MCP-native workflows, the server at api.agentline.cloud/mcp exposes 21+ tools as first-class agent tools.
+description: Make phone calls, view received SMS, provision numbers, and manage agents through a self-hosted AgentLine telephony API (REST or MCP). Use when the user asks to call someone, check transcripts, view text messages, manage phone agents, or buy numbers. The server operator chooses the carrier and the voice runtime.
 metadata:
   openclaw:
     emoji: "📞"
@@ -12,14 +12,14 @@ metadata:
 
 # AgentLine — AI Telephony Skill
 
-Give your AI agent a real phone number and voice calls — no servers, no webhooks, no infrastructure.
+Give your AI agent a real phone number and voice calls. Use the persistent relay for live context; use webhooks only as a fallback.
 
 ## First-Time Setup
 
 **Follow these steps IN ORDER when setting up AgentLine for the first time:**
 
-1. **Check for `AGENTLINE_API_KEY`** (starts with `sk_live_`) — this is required.
-   - **If you do NOT have this key**, stop and ask the human to sign up or log in at **https://agentline.cloud** to get their API key. Do NOT proceed without it.
+1. **Check for `AGENTLINE_API_KEY`** (starts with `al_live_` or `sk_live_`) and `AGENTLINE_URL` (defaults to `http://localhost:8000`).
+   - **If you do NOT have this key**, stop and ask the human for the API key from their AgentLine server. Do NOT proceed without it.
 
 2. **Check for `AGENTLINE_AGENT_ID`** (starts with `agt_`) — this is optional.
    - **If you already have one**, use it and skip to step 3.
@@ -38,14 +38,9 @@ Give your AI agent a real phone number and voice calls — no servers, no webhoo
    - Apply via `PATCH /v1/agents/$AGENTLINE_AGENT_ID` with `{"voice_id": "chosen_preset"}`
    - Available presets: `female-1`, `female-2`, `male-1` — or any Cartesia voice UUID
 
-5. **Start the background event poller** — This is **MANDATORY**. Write the polling script (see Events Mailbox section below) to a scratch file and launch it as a background command. Without this, you will miss all inbound calls and SMS messages.
+5. **Connect to events** — the server exposes `GET /v1/events` and `WS /v1/events/ws` on `AGENTLINE_URL`. Use the websocket for live call context. If that is unavailable, configure a webhook or poll `GET /v1/events`.
 
-> ⚠️ **Do NOT skip ANY steps.** Steps 1-4 set up the agent. Step 5 keeps it alive and aware of incoming calls/texts.
-   - Write the polling script (Bash for Linux/macOS, PowerShell for Windows) from the Events Mailbox section below
-   - Launch it as a background process with `terminal(background=true)`
-   - Verify it's running
-
-> ⚠️ **Do NOT skip steps or change the order.** The human should have a working agent with their chosen area code number, voice, and running event poller by the end.
+Live call context arrives on `WS /v1/events/ws`. SMS and completed calls also land in `GET /v1/events`.
 
 ---
 
@@ -53,30 +48,33 @@ Give your AI agent a real phone number and voice calls — no servers, no webhoo
 
 Every request: `Authorization: Bearer $AGENTLINE_API_KEY` + `Content-Type: application/json`
 
-Base URL: `https://api.agentline.cloud`
+Base URL: `$AGENTLINE_URL` (self-hosted default `http://localhost:8000`)
 
 ---
 
-## How Calls Work (Hosted Mode)
+## How Calls Work
 
-AgentLine runs in **Hosted Mode** — the server runs the AI voice conversation autonomously. You create a call, the AI handles it, you retrieve the transcript afterwards.
+The server runs the voice conversation with the configured runtime (`builtin`, `livekit`, or `pipecat`). You create a call, that runtime handles it, and you retrieve the transcript afterwards.
 
-### System Prompts
+### System Prompt & Greeting Resolution
 
-- **Dynamic prompt** — `system_prompt` field in `POST /v1/calls`. Overrides default for that call only.
-- **Default prompt** — stored on agent via `PATCH /v1/agents/{agent_id}`. Used for all inbound calls and outbound calls without a dynamic prompt.
+Both `system_prompt` and `initial_greeting` follow the same priority chain:
 
-> ⚠️ **`system_prompt` is a FULL REPLACE, not append.** The voice AI has no memory between calls — put everything (personality, instructions, current context) in the prompt. Update it whenever your context changes.
+| Priority | Where to set | Scope | API |
+|----------|-------------|-------|-----|
+| **1 (highest)** | Per-call override | This call only | `POST /v1/calls` with `system_prompt` / `initial_greeting` |
+| **2** | Agent default | All calls on this agent | `PATCH /v1/agents/{id}` with `system_prompt` / `initial_greeting` |
+| **3 (lowest)** | Hardcoded fallback | Last resort | Generic prompt + "Hello, how can I help you today?" |
+
+**When to use which:**
+- **Set on the agent** (`PATCH /v1/agents`) when you want a persistent personality/greeting for ALL calls (inbound AND outbound).
+- **Set per-call** (`POST /v1/calls`) when you need a one-time context-specific prompt/greeting for a single outbound call. Does NOT change the agent's default.
+
+> ⚠️ **`system_prompt` is a FULL REPLACE, not append.** The voice AI has no memory between calls — include everything (personality, instructions, current context) in the prompt.
+
+> ⚠️ **`initial_greeting`** is what the agent SPEAKS ALOUD at the start of the call. It is NOT part of the system prompt — it's the first thing the caller hears. Set it on the agent for a consistent greeting, or override it per-call for context-specific openers.
 
 ---
-
-## Before Calling — Balance Check
-
-Always check balance first. Calls require minimum **$0.50**:
-```bash
-curl -s "$AGENTLINE_URL/v1/billing/balance" -H "Authorization: Bearer $AGENTLINE_API_KEY"
-```
-If balance < $0.50, warn the user before attempting the call.
 
 ## Make an Outbound Call
 
@@ -128,19 +126,32 @@ curl -X POST $AGENTLINE_URL/v1/calls \
 
 ## Events Mailbox
 
-Events are pushed when someone calls or texts your agent's number. **You MUST poll regularly.**
+Events are delivered through the persistent relay or a configured webhook. Polling is only a fallback for non-live awareness.
 
-**Event types:** `call.received` (inbound call started), `call.completed` (call ended, includes transcript), `sms.received` (inbound SMS)
+**Event types:** `call.received` (inbound call started), `call.utterance` (live caller turn), `call.completed` (call ended, includes transcript), `call.owner_task` (owner instructions), `sms.received` (inbound SMS)
 
-### ⚡ MANDATORY — Background Event Polling
+### Persistent WebSocket Relay
 
-> ⚠️ **Do NOT use `schedule`/cron to poll.** Use the background script approach — it only wakes you when events exist.
+The relay connects outbound to:
+`ws://localhost:8000/v1/events/ws?agent_id=agt_xxx&runtime=<runtime>` (use `wss://` when `AGENTLINE_URL` is https)
 
-**Setup:** Write the polling script to a scratch file, then launch as a background command with `WaitMsBeforeAsync=500`.
+For `call.utterance`, send context and then acknowledge the exact event:
+```json
+{"type":"context","event_id":"evt_xxx","call_id":"call_xxx","turn_id":"turn_xxx","push_token":"...","context":"The requested facts or answer."}
+{"type":"ack","event_id":"evt_xxx"}
+```
+
+Always echo the exact `turn_id`; stale context returns `409` and must not be reused for another question.
+
+### Polling Fallback
+
+Use `GET /v1/events` only when the persistent relay and webhook are unavailable. It is not suitable for live caller turns.
+
+The existing scripts below are fallback examples only.
 
 **Windows (PowerShell):**
 ```powershell
-param([string]$ApiKey, [string]$BaseUrl = "https://api.agentline.cloud", [int]$Interval = 50)
+param([string]$ApiKey, [string]$BaseUrl = "http://localhost:8000", [int]$Interval = 50)
 $headers = @{ "Authorization" = "Bearer $ApiKey" }
 while ($true) {
     try {
@@ -157,7 +168,7 @@ while ($true) {
 ```bash
 #!/usr/bin/env bash
 set -uo pipefail
-API_KEY="$1"; BASE_URL="${2:-https://api.agentline.cloud}"; INTERVAL="${3:-50}"
+API_KEY="$1"; BASE_URL="${2:-http://localhost:8000}"; INTERVAL="${3:-50}"
 while true; do
   RESP=$(curl -s -w "\n%{http_code}" "$BASE_URL/v1/events/peek" -H "Authorization: Bearer $API_KEY" 2>/dev/null) || { sleep "$INTERVAL"; continue; }
   CODE=$(echo "$RESP" | tail -1); BODY=$(echo "$RESP" | sed '$d')
@@ -209,10 +220,11 @@ Inbound SMS arrives as `sms.received` events in the Events Mailbox. View message
 
 | Field | Description |
 |-------|-------------|
-| `system_prompt` | Full instructions + current context for voice AI |
-| `initial_greeting` | What the agent says when answering inbound calls |
+| `system_prompt` | Default instructions for ALL calls (inbound + outbound). Per-call override via `POST /v1/calls` takes priority. |
+| `initial_greeting` | Default opening line spoken on ALL calls (inbound + outbound). Per-call override via `POST /v1/calls` takes priority. |
 | `name` | Display name |
-| `voice_id` | `"female-1"`, `"female-2"`, `"male-1"`, or Cartesia UUID |
+| `voice_id` | `"female-1"`, `"female-2"`, `"male-1"`, or a voice id your TTS hook understands |
+| `voice_runtime` | `"builtin"`, `"livekit"`, `"pipecat"`, or `module:Class`. Empty uses the server default |
 | `model_tier` | `"turbo"`, `"balanced"`, or `"max"` |
 
 ---
@@ -237,7 +249,7 @@ Priority (highest wins): per-call → per-agent → per-account
 
 ## Phone Numbers
 
-Each agent needs one phone number. Only US numbers supported. **$2.00 per number.**
+Each agent needs one phone number. The configured carrier decides which countries it can sell. You pay that carrier directly.
 
 ### Provision (Buy) a Number
 
@@ -246,7 +258,7 @@ Each agent needs one phone number. Only US numbers supported. **$2.00 per number
 | Field | Required | Description |
 |-------|------------|-------------|
 | `agent_id` | Yes | Agent to attach to |
-| `country` | Yes | Must be `"US"` |
+| `country` | No | Country code the carrier should search. Defaults to `"US"` |
 | `area_code` | No | Preferred 3-digit area code (e.g. `"212"`, `"313"`). **Always ask the user!** |
 | `number_type` | No | `"local"` or `"tollfree"` (default: local) |
 
@@ -256,35 +268,32 @@ If no numbers are available for the requested area code, the API returns an erro
 
 `GET /v1/numbers`
 
+### Release a number
+
+`POST /v1/numbers/{number_id}/release` (MCP: `release_phone_number`)
+
+> ⚠️ **Destructive.** Unrents the number from the carrier. It cannot be recovered, and calls and texts to it stop. Refused while a call is in progress or a lease is still active. Confirm with the human first.
+
 ---
 
-## Billing
+## Carriers and voice runtimes
 
-- **Check balance:** `GET /v1/billing/balance`
-- **Expenditure:** `GET /v1/billing/expenditure?period=current_month` (also: `last_month`, `all_time`, `YYYY-MM`)
-- **Call charges:** `GET /v1/billing/expenditure/calls?limit=10`
-- **Number charges:** `GET /v1/billing/expenditure/numbers`
-- **Verify charge:** `GET /v1/billing/verify/<call_id>`
+The server operator chooses these. `GET /debug/urls` reports the active carrier and voice runtime. An agent can set `voice_runtime` to `builtin`, `livekit`, `pipecat`, or a `module:Class` path.
 
-### Rates
-
-| Item | Cost |
-|------|------|
-| Calls (in/out) | $0.10/min (billed per second) |
-| Phone number | $2.00 (one-time) |
+See [docs/providers.md](../../docs/providers.md) in this repo.
 
 ---
 
 ## MCP Server
 
-AgentLine exposes a full MCP (Model Context Protocol) server at `https://api.agentline.cloud/mcp` with 21+ tools. For Claude Desktop, Cursor, or any MCP-compatible client, connect directly via:
+AgentLine exposes an MCP server at `$AGENTLINE_URL/mcp`. For Claude Desktop, Cursor, or any MCP-compatible client, connect directly via:
 
 ```json
 {
   "mcpServers": {
     "agentline": {
       "command": "npx",
-      "args": ["-y", "mcp-remote@latest", "https://api.agentline.cloud/mcp", "--header", "Authorization: Bearer YOUR_API_KEY"]
+      "args": ["-y", "mcp-remote@latest", "$AGENTLINE_URL/mcp", "--header", "Authorization: Bearer YOUR_API_KEY"]
     }
   }
 }
@@ -300,8 +309,8 @@ All REST endpoints above are also available as MCP tools (`create_agent`, `make_
 2. **Confirm before calling** — never auto-dial without explicit consent.
 3. **No outbound SMS** — inform user it's not available if they ask.
 4. **Keep voice responses extremely short** — under 15 words per turn. Max 12 for outbound feedback/support calls. The voice AI rambles without tight constraints.
-5. **US only** — country must be `"US"`.
-6. **Don't release numbers** — numbers are permanent once provisioned.
+5. **Use the carrier's country rules** — pass the country that carrier can sell.
+6. **Release numbers only when the human asks** — releasing unrents the number from the carrier and cannot be undone.
 7. **Always retrieve transcripts** — poll until `completed`, fetch transcript, summarize for human.
-8. **Always check events** — poll `GET /v1/events` for inbound calls and SMS. Proactively check at conversation start.
+8. **Use the events websocket** — poll `GET /v1/events` only when the websocket and webhook are unavailable.
 9. **Voice changes take effect on next call** — update immediately when asked.

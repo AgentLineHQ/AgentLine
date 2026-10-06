@@ -8,7 +8,7 @@ from datetime import datetime
 
 class NumberProvision(BaseModel):
     agent_id: str = Field(description="ID of the AI agent to assign this phone number to (e.g. 'agt_abc123')")
-    country: str = Field(default="US", description="Country code for the phone number (currently only 'US' is supported)")
+    country: str = Field(default="US", description="Country code the telephony provider should search")
     number_type: str = Field(default="local", description="Type of phone number: 'local' or 'tollfree'")
     area_code: str | None = Field(default=None, description="Preferred 3-digit US area code (e.g. '212' for NYC, '415' for SF, '310' for LA)")
     pattern: str | None = Field(default=None, description="Legacy digit pattern match (prefer area_code instead)")

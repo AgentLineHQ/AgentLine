@@ -11,8 +11,12 @@ from agentline.database import get_db
 
 security = HTTPBearer(
     scheme_name="API Key",
-    description="Pass your API key as a Bearer token: `Authorization: Bearer sk_live_xxx`",
+    description="Pass your API key as a Bearer token: `Authorization: Bearer al_live_xxx`",
 )
+
+# Accepted key prefixes. `al_live_` is the current mint prefix; `sk_live_` is
+# legacy (collided with Stripe secret-key redaction in agent runtimes).
+_VALID_KEY_PREFIXES = ("al_live_", "sk_live_")
 
 
 async def get_current_account(
@@ -22,13 +26,15 @@ async def get_current_account(
     """
     Validate the Bearer token against stored API key hashes.
     Returns the full account record (merged with api_keys row).
+
+    Accepts both `al_live_` (current) and `sk_live_` (legacy) key prefixes.
     """
     token = credentials.credentials
 
-    if not token.startswith("sk_live_"):
+    if not token or not token.startswith(_VALID_KEY_PREFIXES):
         raise HTTPException(
             status_code=401,
-            detail="Invalid API key format. Keys must start with 'sk_live_'.",
+            detail="Invalid API key format. Keys must start with 'al_live_' or 'sk_live_'.",
         )
 
     prefix = token[:12]

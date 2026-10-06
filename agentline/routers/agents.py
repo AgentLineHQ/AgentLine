@@ -43,8 +43,8 @@ async def create_agent(
     await db.execute(
         """INSERT INTO agents
            (id, account_id, name, system_prompt, initial_greeting,
-            voice_id, model_tier, transfer_number, voicemail_message, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
+            voice_id, model_tier, voice_runtime, transfer_number, voicemail_message, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)""",
         agent_id,
         account["id"],
         body.name,
@@ -52,6 +52,7 @@ async def create_agent(
         body.initial_greeting,
         body.voice_id,
         body.model_tier,
+        body.voice_runtime,
         body.transfer_number,
         body.voicemail_message,
         now,
@@ -65,6 +66,7 @@ async def create_agent(
         initial_greeting=body.initial_greeting,
         voice_id=body.voice_id,
         model_tier=body.model_tier,
+        voice_runtime=body.voice_runtime,
         transfer_number=body.transfer_number,
         voicemail_message=body.voicemail_message,
         created_at=now,

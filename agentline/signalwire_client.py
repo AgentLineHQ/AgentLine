@@ -23,6 +23,8 @@ async def initiate_call(
     from_number: str,
     to_number: str,
     call_id: str,
+    answer_url: str | None = None,
+    status_url: str | None = None,
 ) -> str:
     """
     Place an outbound voice call via SignalWire.
@@ -30,14 +32,15 @@ async def initiate_call(
     When the callee answers, SignalWire will POST to our answer_url which returns
     XML with a <Response> element to start the voice pipeline.
     """
-    answer_url = f"{settings.base_url_clean}/signalwire/answer/{call_id}"
+    answer_url = answer_url or f"{settings.base_url_clean}/signalwire/answer/{call_id}"
+    status_url = status_url or f"{settings.base_url_clean}/signalwire/hangup/{call_id}"
 
     data = {
         "From": from_number,
         "To": to_number,
         "Url": answer_url,
         "Method": "POST",
-        "StatusCallback": f"{settings.base_url_clean}/signalwire/hangup/{call_id}",
+        "StatusCallback": status_url,
         "StatusCallbackMethod": "POST",
     }
 

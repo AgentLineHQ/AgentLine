@@ -15,7 +15,7 @@
 
   <br/>
 
-  [Website](https://agentline.cloud) · [Docs](https://agentline.cloud/docs) · [Skill File](https://agentline.cloud/skill.md) · [Discord](https://discord.gg/69SVE2jWNr)
+  [Website](https://agentline.cloud) · [Docs](https://agentline.cloud/docs) · [Changelog](CHANGELOG.md) · [Skill File](https://agentline.cloud/skill.md) · [Discord](https://discord.gg/69SVE2jWNr)
 
   <br/>
 </div>
@@ -52,11 +52,12 @@ Your AI Agent  →  AgentLine API  →  Real Phone Calls
 - 💬 **SMS** — Receive and read inbound text messages
 - 🔌 **MCP Server** — Native Model Context Protocol support for Claude Desktop and Cursor
 - 📋 **Skill File** — One-file install for any AI agent (Claude Code, Cursor, OpenClaw)
-- 🌍 **Multi-Provider** — SignalWire (US) with pluggable provider architecture
+- 🌍 **Pluggable carriers** — SignalWire, Twilio, Plivo, Telnyx, or your own class
+- 🎙️ **Pluggable voice runtimes** — built-in pipeline, [LiveKit](https://livekit.io), [Pipecat](https://github.com/pipecat-ai/pipecat), or your own
 - 📝 **Transcripts** — Automatic call transcription with full conversation history
-- 📬 **Event Mailbox** — Poll-based event system for agents without webhook endpoints
-- 💰 **Built-in Billing** — Per-second call billing with balance tracking
-- 🐳 **Docker Ready** — One command to run the entire stack locally
+- 🔄 **Persistent Agent Relay** — outbound WebSocket with reconnect, ACK/replay, turn-safe context, and runtime-aware setup
+- 📬 **Event Mailbox** — durable fallback for agents without a relay or webhook
+- 🐳 **Docker Ready** — One command to run the API, Postgres, and Redis locally
 
 ---
 
@@ -65,29 +66,29 @@ Your AI Agent  →  AgentLine API  →  Real Phone Calls
 ```mermaid
 graph LR
     A["🤖 AI Agent"] -->|REST API / MCP| B["⚡ AgentLine API"]
-    B -->|Provision Numbers| C["📱 SignalWire"]
-    B -->|Speech-to-Text| D["🎤 Deepgram"]
-    B -->|Text-to-Speech| E["🔊 Cartesia"]
-    B -->|LLM Reasoning| F["🧠 OpenAI"]
-    C -->|Voice & SMS| G["📞 PSTN Network"]
-    B -->|Events & Transcripts| A
+    B -->|Telephony hook| C["📱 SignalWire, Twilio, Plivo, Telnyx, or yours"]
+    B -->|Voice runtime hook| H["🎙️ Built-in, LiveKit, or Pipecat"]
+    H -->|Built-in only| D["🎤 STT hook"]
+    H -->|Built-in only| E["🔊 TTS hook"]
+    H -->|Built-in only| F["🧠 LLM hook"]
+    C -->|Voice and SMS| G["📞 PSTN"]
+    B -->|Events and transcripts| A
 ```
 
-### Voice Pipeline — Hybrid Relay Mode
+### Voice runtimes
 
-AgentLine uses an asynchronous **Hybrid Relay** architecture instead of fragile real-time WebSocket streams:
+`VOICE_RUNTIME` picks who holds the conversation:
 
-```
-Caller dials your agent's number
-  → SignalWire answers the call
-  → Plays TTS greeting to caller
-  → Records caller's speech
-  → Deepgram transcribes (fast, accurate)
-  → LLM generates agent response
-  → Cartesia speaks the response
-  → Loop continues until call ends
-  → Full transcript stored for retrieval
-```
+| Runtime | What it does |
+| --- | --- |
+| `builtin` | This process runs the STT, LLM, and TTS hooks on the carrier media websocket |
+| `livekit` | Creates a LiveKit room, dispatches your agent, and either dials LiveKit SIP or bridges the carrier audio |
+| `pipecat` | Runs a Pipecat bot on the carrier websocket. Bring your own with `PIPECAT_FACTORY` |
+| `module:Class` | Your runtime. Implement `prepare` and `run` |
+
+The built-in hooks default to Deepgram, any OpenAI-compatible chat API, and Cartesia. Swap each one with `STT_PROVIDER`, `LLM_PROVIDER`, and `TTS_PROVIDER`. An agent can override the runtime with `voice_runtime`.
+
+Carriers, runtimes, and the exact method signatures are in [docs/providers.md](docs/providers.md). A copy-paste registration example is in [examples/hooks.py](examples/hooks.py).
 
 ---
 
@@ -133,19 +134,35 @@ Copy `.env.example` to `.env` and fill in your credentials:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SUPABASE_URL` | Yes | Your Supabase project URL |
-| `SUPABASE_ANON_KEY` | Yes | Supabase anonymous key |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key (server-side) |
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `SIGNALWIRE_PROJECT_ID` | Yes | SignalWire project ID |
-| `SIGNALWIRE_TOKEN` | Yes | SignalWire API token |
-| `SIGNALWIRE_SPACE_URL` | Yes | Your SignalWire space URL |
-| `DEEPGRAM_API_KEY` | Yes | Deepgram API key (STT) |
-| `CARTESIA_API_KEY` | Yes | Cartesia API key (TTS) |
-| `OPENAI_API_KEY` | Yes | OpenAI API key (LLM) |
+| `DATABASE_URL` | Yes | PostgreSQL connection string. Docker Compose fills this in |
+| `TELEPHONY_PROVIDER` | No | `signalwire` (default), `twilio`, `plivo`, `telnyx`, or `module:Class` |
+| `VOICE_RUNTIME` | No | `builtin` (default), `livekit`, `pipecat`, or `module:Class` |
+| `SIGNALWIRE_PROJECT_ID` | For SignalWire | SignalWire project ID |
+| `SIGNALWIRE_TOKEN` | For SignalWire | SignalWire API token |
+| `SIGNALWIRE_SPACE_URL` | For SignalWire | Space hostname, such as `example.signalwire.com` |
+| `TWILIO_ACCOUNT_SID` | For Twilio | Twilio account SID |
+| `TWILIO_AUTH_TOKEN` | For Twilio | Twilio auth token |
+| `PLIVO_AUTH_ID` | For Plivo | Plivo auth id |
+| `PLIVO_AUTH_TOKEN` | For Plivo | Plivo auth token |
+| `TELNYX_API_KEY` | For Telnyx | Telnyx API key |
+| `TELNYX_ACCOUNT_SID` | For Telnyx | TeXML application id |
+| `STT_PROVIDER` | No | `deepgram` or `module:Class` |
+| `TTS_PROVIDER` | No | `cartesia` or `module:Class` |
+| `LLM_PROVIDER` | No | `openai` or `module:Class` |
+| `DEEPGRAM_API_KEY` | For the default STT | Deepgram API key |
+| `CARTESIA_API_KEY` | For the default TTS | Cartesia API key |
+| `OPENAI_API_KEY` | For the default LLM | OpenAI-compatible API key |
+| `OPENAI_BASE_URL` | No | Defaults to `https://api.openai.com/v1` |
+| `LIVEKIT_URL` | For LiveKit | LiveKit server URL |
+| `LIVEKIT_API_KEY` | For LiveKit | LiveKit API key |
+| `LIVEKIT_API_SECRET` | For LiveKit | LiveKit API secret |
+| `LIVEKIT_SIP_URI` | No | When set, the carrier dials LiveKit SIP. Supports `{room}` and `{call_id}` |
+| `PIPECAT_FACTORY` | No | `module:function` that replaces the default Pipecat bot |
 | `REDIS_URL` | No | Redis URL (defaults to `localhost:6379`) |
 | `SECRET_KEY` | Yes | App secret key |
 | `BASE_URL` | Yes | Public URL of your deployment |
+
+LiveKit's in-process audio bridge needs `pip install -r requirements-livekit.txt`. The default Pipecat bot needs `pip install -r requirements-pipecat.txt`. SIP mode for LiveKit does not need the LiveKit Python package.
 
 ---
 
@@ -166,11 +183,12 @@ Once running, visit `http://localhost:8000/docs` for the interactive Swagger UI.
 | `GET` | `/v1/calls` | List calls |
 | `GET` | `/v1/calls/{id}/transcript` | Get call transcript |
 | `POST` | `/v1/calls/{id}/hangup` | End an active call |
-| `GET` | `/v1/events` | Poll event mailbox (consume) |
+| `GET` | `/.well-known/agentline.json` | Discover relay, webhook, and runtime setup |
+| `GET` | `/v1/events` | Poll event mailbox (fallback) |
+| `WS` | `/v1/events/ws` | Persistent outbound agent relay |
 | `GET` | `/v1/events/peek` | Peek at events (non-destructive) |
 | `GET` | `/v1/messages` | List SMS messages |
-| `GET` | `/v1/billing/balance` | Check account balance |
-| `GET` | `/v1/billing/expenditure` | Spending breakdown |
+| `GET` | `/debug/urls` | Active carrier, voice runtime, and callback URLs |
 
 ### Authentication
 
@@ -179,7 +197,7 @@ All requests require an API key:
 ```bash
 curl -H "Authorization: Bearer sk_live_YOUR_KEY" \
      -H "Content-Type: application/json" \
-     https://api.agentline.cloud/v1/agents
+     http://localhost:8000/v1/agents
 ```
 
 ---
@@ -225,7 +243,6 @@ Add to your Claude Desktop config:
 | `list_phone_numbers` | List all phone numbers |
 | `poll_events` | Poll event mailbox |
 | `peek_events` | Peek at pending events |
-| `get_account_balance` | Check account balance |
 | `list_available_voices` | List voice presets |
 
 ### Test with MCP Inspector
@@ -259,12 +276,13 @@ The skill file is also included in this repo at [`skills/agentline/SKILL.md`](sk
 | Component | Technology |
 |-----------|-----------|
 | **API Framework** | [FastAPI](https://fastapi.tiangolo.com) (async Python) |
-| **Database** | PostgreSQL ([Supabase](https://supabase.com)) |
+| **Database** | PostgreSQL |
 | **Cache** | Redis |
-| **Phone Numbers & Calls** | [SignalWire](https://signalwire.com) |
-| **Speech-to-Text** | [Deepgram](https://deepgram.com) Nova-2 |
-| **Text-to-Speech** | [Cartesia](https://cartesia.ai) Sonic |
-| **LLM** | [OpenAI](https://openai.com) GPT-4o / GPT-4o-mini |
+| **Phone numbers and calls** | SignalWire, Twilio, Plivo, Telnyx, or your class |
+| **Voice runtime** | Built-in pipeline, LiveKit, or Pipecat |
+| **Default speech-to-text** | Deepgram Nova-2, replaceable |
+| **Default text-to-speech** | Cartesia Sonic, replaceable |
+| **Default LLM** | Any OpenAI-compatible API |
 | **MCP Server** | [FastAPI-MCP](https://github.com/tadata-org/fastapi-mcp) |
 | **Deployment** | Docker, [Railway](https://railway.app) |
 
@@ -289,30 +307,21 @@ AgentLine runs anywhere that supports Python 3.12+ and Docker: AWS, GCP, Azure, 
 
 The database schema is in [`schema.sql`](schema.sql). It creates tables for:
 
-- **accounts** — User accounts with balance tracking
+- **accounts** — API accounts
 - **api_keys** — Hashed API keys for authentication
-- **agents** — AI voice agent configurations
-- **phone_numbers** — Provisioned phone numbers
+- **agents** — AI voice agent configurations, including an optional `voice_runtime`
+- **phone_numbers** — Provisioned phone numbers and which carrier owns them
 - **calls** — Call records with transcripts
 - **messages** — SMS message records
 - **event_mailbox** — Server-side event queue
-- **billing_ledger** — Immutable billing transaction log
 
 Migrations are in the [`migrations/`](migrations/) directory.
 
 ---
 
-## Pricing (Hosted Version)
+## Cost
 
-If using the hosted version at [agentline.cloud](https://agentline.cloud):
-
-| Item | Cost |
-|------|------|
-| Voice calls (inbound/outbound) | $0.10/min (billed per second) |
-| Phone number | $2.00 (one-time) |
-| SMS (inbound) | Free |
-
-Self-hosted: you pay only your provider costs (SignalWire, Deepgram, Cartesia, OpenAI).
+This repository does not bill anyone. You pay the carrier, speech vendor, model host, LiveKit, or Pipecat deployment you configure.
 
 ---
 
