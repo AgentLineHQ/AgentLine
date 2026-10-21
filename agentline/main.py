@@ -73,14 +73,10 @@ async def _reconfigure_number_callbacks_safe():
 
 
 async def _reconfigure_number_callbacks():
-    """Point active numbers at this server's webhook URLs for their carrier."""
-    from agentline.providers.registry import get_telephony
+    """Point active numbers at this server's webhook URLs for every enabled carrier."""
+    from agentline.providers.router import get_router
 
-    provider = get_telephony()
-    if not provider.is_configured():
-        logger.info("Skipping number webhook refresh — %s is not configured.", provider.name)
-        return
-    await provider.reconfigure_active_numbers()
+    await get_router().reconfigure_active_numbers()
 
 
 app = FastAPI(
@@ -153,6 +149,7 @@ async def debug_urls():
     from agentline.config import settings
     from agentline.providers.base import public_http_url, public_ws_url
     from agentline.providers.registry import get_telephony, registered_telephony
+    from agentline.providers.router import get_router
     from agentline.voice.hooks import registered_llm, registered_stt, registered_tts
     from agentline.voice.runtime import registered_runtimes
 
@@ -169,6 +166,7 @@ async def debug_urls():
         "inbound_url": public_http_url(f"/{name}/inbound"),
         "inbound_hangup_url": public_http_url(f"/{name}/inbound_hangup"),
         "sms_url": public_http_url(f"/{name}/sms"),
+        "routing": get_router().describe(),
     }
     if name == "signalwire":
         from agentline.signalwire_client import callback_url_data

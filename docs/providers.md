@@ -18,6 +18,40 @@ Agentline ships the call API, the event mailbox, and the webhook surface. The ca
 
 Webhook routes for all four built-ins stay mounted. A number keeps working after you change `TELEPHONY_PROVIDER`, because each number stores the carrier that sold it.
 
+### Several carriers at once
+
+The telephony router (`agentline/providers/router.py`) lets one server run Twilio, SignalWire, Plivo, Telnyx, and custom carriers together. Each number stores the carrier that sold it, so its calls, SMS, and hangups always go through that carrier. The router only decides who sells or attaches a new number.
+
+| Variable | Meaning |
+| --- | --- |
+| `TELEPHONY_PROVIDER` | Default carrier. |
+| `TELEPHONY_PROVIDERS` | Other enabled carriers, comma separated. Empty enables every built-in whose credentials are set. |
+| `TELEPHONY_ROUTES` | Rules for new numbers. Keys are `COUNTRY`, `COUNTRY:type`, `*:type`, or `*`; the most specific match wins. `\|` lists fallbacks. Carriers named here are enabled. |
+| `TELEPHONY_FAILOVER` | `true` (default): if a purchase fails, try the rest of the rule, then every other enabled carrier with credentials. |
+
+```env
+TELEPHONY_PROVIDER=signalwire
+TELEPHONY_ROUTES=US=twilio|signalwire,CA=twilio,GB=plivo,*:tollfree=telnyx,*=signalwire
+```
+
+A caller can choose the carrier for one number. Choosing a carrier turns off failover for that request:
+
+```bash
+curl -X POST $BASE_URL/v1/numbers -H "Authorization: Bearer $KEY"   -d '{"agent_id": "agt_123", "country": "US", "provider": "plivo"}'
+curl -X POST "$BASE_URL/v1/numbers/attach?phone_number=%2B14155550100&agent_id=agt_123&provider=twilio"
+```
+
+The response lists `provider_attempts`, so you can see which carriers failed before one succeeded. On startup every enabled carrier refreshes the webhooks of its own numbers. Numbers saved before the `provider` column existed count as `TELEPHONY_PROVIDER`. `GET /debug/urls` shows the routing table under `telephony.routing`.
+
+Use the router from code:
+
+```python
+from agentline.providers import get_router
+
+routed = await get_router().provision(country="GB", number_type="local")
+print(routed.provider.name, routed.number.phone_number)
+```
+
 Point the carrier at these paths (`BASE_URL` is your public origin):
 
 | Carrier | Inbound voice | Inbound SMS | Hangup |

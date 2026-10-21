@@ -308,6 +308,7 @@ Each agent needs one phone number. The configured carrier decides which countrie
 |-------|------------|-------------|
 | `agent_id` | Yes | Agent to attach to |
 | `country` | No | Country code the carrier should search. Defaults to `"US"` |
+| `provider` | No | Carrier to buy from (`twilio`, `signalwire`, `plivo`, `telnyx`, ...). Omit to let the server's routing rules choose |
 | `area_code` | No | Preferred 3-digit area code (e.g. `"212"`, `"313"`). **Always ask the user!** |
 | `number_type` | No | `"local"` or `"tollfree"` (default: local) |
 

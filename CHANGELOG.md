@@ -3,6 +3,17 @@
 Notable changes to the open-source AgentLine tree, newest first.
 Version numbers match `agentline/main.py`.
 
+## [Unreleased]
+
+### Added
+
+- Telephony router. One server can run SignalWire, Twilio, Plivo, Telnyx, and custom carriers at the same time. `TELEPHONY_PROVIDERS` enables extra carriers. `TELEPHONY_ROUTES` picks a carrier for new numbers by country and number type. `TELEPHONY_FAILOVER` tries the next carrier when a purchase fails. `POST /v1/numbers` takes `provider`, and `POST /v1/numbers/attach` takes `provider` and `country`.
+- Startup webhook refresh runs for every enabled carrier, and `/debug/urls` shows the routing table.
+
+### Changed
+
+- Numbers with no stored carrier belong to `TELEPHONY_PROVIDER` during the webhook refresh. Before, every carrier tried to claim them.
+
 ## [0.4.0] — 2026-10-06
 
 Self-hosters bring their own carrier and voice stack. The default path is unchanged: SignalWire, Deepgram, an OpenAI-compatible LLM, and Cartesia, including the relay, DTMF, and owner-mode behavior from 0.3.0.

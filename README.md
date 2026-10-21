@@ -66,7 +66,7 @@ Works with **Claude Code**, **Claude Desktop**, **Cursor**, **OpenClaw**, **Herm
 - 💬 **SMS** — Receive and read inbound text messages
 - 🔌 **MCP Server** — Native Model Context Protocol tools for Claude Desktop, Claude Code, Cursor, OpenClaw, and Codex
 - 📋 **Skill File** — One-file install for Claude Code, Cursor, OpenClaw, Hermes, and similar runtimes
-- 🌍 **Pluggable carriers** — SignalWire, Twilio, Plivo, Telnyx, or your own class
+- 🌍 **Pluggable carriers** — SignalWire, Twilio, Plivo, Telnyx, or your own class, side by side with per-country routing and failover
 - 🎙️ **Pluggable voice runtimes** — built-in pipeline, [LiveKit](https://livekit.io), [Pipecat](https://github.com/pipecat-ai/pipecat), or your own
 - 📝 **Transcripts** — Automatic call transcription with full conversation history
 - 🔄 **Persistent Agent Relay** — outbound WebSocket with reconnect, ACK/replay, turn-safe context, and runtime-aware setup
@@ -161,6 +161,9 @@ Copy `.env.example` to `.env` and fill in your credentials:
 |----------|----------|-------------|
 | `DATABASE_URL` | Yes | PostgreSQL connection string. Docker Compose fills this in |
 | `TELEPHONY_PROVIDER` | No | `signalwire` (default), `twilio`, `plivo`, `telnyx`, or `module:Class` |
+| `TELEPHONY_PROVIDERS` | No | Extra carriers to run at the same time, comma separated. Empty enables every built-in with credentials |
+| `TELEPHONY_ROUTES` | No | Carrier per country / number type for new numbers, e.g. `US=twilio\|signalwire,GB=plivo,*=signalwire` |
+| `TELEPHONY_FAILOVER` | No | `true` (default) tries the next carrier when buying a number fails |
 | `VOICE_RUNTIME` | No | `builtin` (default), `livekit`, `pipecat`, or `module:Class` |
 | `SIGNALWIRE_PROJECT_ID` | For SignalWire | SignalWire project ID |
 | `SIGNALWIRE_TOKEN` | For SignalWire | SignalWire API token |

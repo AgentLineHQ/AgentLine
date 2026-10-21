@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
 from agentline.models.number import NumberProvision, NumberOut
-from agentline.providers.registry import get_telephony
+from agentline.providers.router import RoutingError, get_router
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +27,10 @@ async def provision(
     db=Depends(get_db),
 ):
     """
-    Buys a phone number from the configured telephony provider and attaches
-    it to the AI agent. The carrier decides which countries and area codes
-    it can sell. You pay that carrier directly.
+    Buys a phone number and attaches it to the AI agent. Pass `provider`
+    to choose the carrier (Twilio, SignalWire, Plivo, Telnyx, ...), or omit
+    it and the server's TELEPHONY_ROUTES pick one by country, failing over
+    to the next carrier if a purchase fails. You pay that carrier directly.
 
     Each AI agent can only have ONE active phone number.
 
@@ -38,8 +39,9 @@ async def provision(
       - country: ISO country code the provider should search
       - number_type: "local" | "tollfree"
       - area_code: preferred area code, when the provider supports it
+      - provider: carrier name (optional)
     """
-    provider = get_telephony()
+    router_ = get_router()
 
     # Verify agent belongs to this account
     agent = await db.fetchrow(
@@ -63,15 +65,18 @@ async def provision(
         )
 
     try:
-        number_data = await provider.provision_number(
+        routed = await router_.provision(
             country=body.country,
             number_type=body.number_type,
             area_code=body.area_code,
             pattern=body.pattern,
             agent_id=body.agent_id,
+            requested=body.provider,
         )
-    except Exception as e:
+    except RoutingError as e:
         raise HTTPException(502, f"Failed to provision number: {str(e)}")
+    provider = routed.provider
+    number_data = routed.number
 
     # Save to database
     number_id = f"num_{secrets.token_urlsafe(12)}"
@@ -121,6 +126,7 @@ async def provision(
         "number_type": body.number_type,
         "status": "active",
         "provider": provider.name,
+        "provider_attempts": routed.attempts,
     }
 
 
@@ -171,6 +177,8 @@ async def get_number(
 async def attach_existing_number(
     phone_number: str,
     agent_id: str,
+    provider: str | None = None,
+    country: str = "US",
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
@@ -181,7 +189,14 @@ async def attach_existing_number(
     Query params:
       - phone_number: E.164 format (e.g. "+12125551234")
       - agent_id: agent to attach to
+      - provider: carrier that owns the number (defaults to the route for country)
+      - country: ISO country code of the number (default "US")
     """
+    try:
+        carrier = get_router().pick(country=country, requested=provider)
+    except RoutingError as e:
+        raise HTTPException(400, str(e))
+
     agent = await db.fetchrow(
         "SELECT * FROM agents WHERE id = $1 AND account_id = $2",
         agent_id,
@@ -210,7 +225,6 @@ async def attach_existing_number(
     if existing:
         raise HTTPException(409, f"Number {phone_number} is already attached (id: {existing['id']}).")
 
-    provider = get_telephony()
     number_id = f"num_{secrets.token_urlsafe(12)}"
     provider_id = phone_number.lstrip("+")
 
@@ -224,8 +238,8 @@ async def attach_existing_number(
             agent_id,
             provider_id,
             phone_number,
-            "US",
-            provider.name,
+            country.upper(),
+            carrier.name,
         )
         logger.info("Manually attached number %s to agent %s", phone_number, agent_id)
     except Exception as e:
@@ -234,7 +248,7 @@ async def attach_existing_number(
 
     webhook_status = "manual_config_needed"
     try:
-        await provider.configure_number(provider_id)
+        await carrier.configure_number(provider_id)
         webhook_status = "auto_configured"
     except Exception as e:
         logger.warning("Could not auto-configure webhooks for %s: %s", phone_number, e)
@@ -244,7 +258,7 @@ async def attach_existing_number(
         "agent_id": agent_id,
         "phone_number": phone_number,
         "status": "active",
-        "provider": provider.name,
+        "provider": carrier.name,
         "webhooks": webhook_status,
     }
 

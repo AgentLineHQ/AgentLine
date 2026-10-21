@@ -12,6 +12,7 @@ class NumberProvision(BaseModel):
     number_type: str = Field(default="local", description="Type of phone number: 'local' or 'tollfree'")
     area_code: str | None = Field(default=None, description="Preferred 3-digit US area code (e.g. '212' for NYC, '415' for SF, '310' for LA)")
     pattern: str | None = Field(default=None, description="Legacy digit pattern match (prefer area_code instead)")
+    provider: str | None = Field(default=None, description="Carrier to buy from: 'signalwire', 'twilio', 'plivo', 'telnyx', or a registered name. Omit to let TELEPHONY_ROUTES pick.")
 
 
 class NumberOut(BaseModel):

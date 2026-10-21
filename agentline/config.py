@@ -22,6 +22,17 @@ class Settings(BaseSettings):
     # signalwire | twilio | plivo | telnyx | module:Class
     TELEPHONY_PROVIDER: str = "signalwire"
 
+    # Extra carriers to run beside the default, comma separated. Empty enables
+    # every built-in carrier whose credentials are set. See providers/router.py.
+    TELEPHONY_PROVIDERS: str = ""
+
+    # Pick a carrier per country and number type for new numbers, e.g.
+    # "US=twilio|signalwire, GB=plivo, *:tollfree=telnyx, *=signalwire"
+    TELEPHONY_ROUTES: str = ""
+
+    # Try the next enabled carrier when buying a number fails.
+    TELEPHONY_FAILOVER: bool = True
+
     # Which voice stack handles the conversation.
     # builtin | livekit | pipecat | module:Class
     VOICE_RUNTIME: str = "builtin"

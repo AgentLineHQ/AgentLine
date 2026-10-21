@@ -188,7 +188,7 @@ class PlivoProvider:
                 "SELECT phone_number, provider_id, provider FROM phone_numbers WHERE status = 'active'"
             )
         for row in rows:
-            owner = row["provider"] or self.name
+            owner = row["provider"] or settings.TELEPHONY_PROVIDER
             if owner != self.name:
                 continue
             try:
